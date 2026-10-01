@@ -1,7 +1,7 @@
 {
   "name": "xive.js",
   "version": "0.1.0",
-  "description": "Build bots for Xive hubs — a REST client and a signed event receiver.",
+  "description": "Build bots for Xive hubs.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

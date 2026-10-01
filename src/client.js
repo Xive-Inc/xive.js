@@ -1,325 +1,237 @@
 import { EventEmitter } from "node:events";
-import { createServer } from "node:http";
-import { REST } from "./rest.js";
-import { verifySignature } from "./verify.js";
-import { Hub, Message } from "./structures.js";
-
-/** @typedef {import("centrifuge").Centrifuge} Centrifuge */
-
-/**
- * Xive event type → the name a listener subscribes to. Anything not listed is still emitted as
- * `raw`, so a new server-side type is usable before this table learns about it.
- */
-export const EVENT_NAMES = Object.freeze({
-  "message.created": "messageCreate",
-  "message.updated": "messageUpdate",
-  "message.deleted": "messageDelete",
-  "message.reaction_added": "messageReactionAdd",
-  "message.reaction_removed": "messageReactionRemove",
-  "member.joined": "memberJoin",
-  "member.left": "memberLeave",
-  "member.kicked": "memberKick",
-  "member.banned": "memberBan",
-  "member.unbanned": "memberUnban",
-  "role.assigned": "roleAssign",
-  "role.removed": "roleRemove",
-  ping: "ping",
-});
-
-/** How many event ids are remembered for de-duplicating retries. */
-const SEEN_MAX = 2000;
-
-/** Largest body a delivery may have before it is refused unread. */
-const MAX_BODY_BYTES = 1024 * 1024;
+import { Connection } from "./connection.js";
+import { Collection } from "./collection.js";
+import { Events } from "./constants.js";
+import { toCommandJSON } from "./builders.js";
+import { ClientUser, Hub, Member, Message, MessageReaction, User } from "./structures.js";
+import { CommandInteraction } from "./interactions.js";
 
 /**
  * A Xive bot.
  *
- * Events reach it one of two ways, and the listeners are the same either way:
- *
- *   - `connect()` — the GATEWAY. The bot opens an outbound websocket, like discord.js. No public
- *     URL, no tunnel; runs from a laptop.
- *   - `listen()` / `middleware()` — HTTP. Xive POSTs each event, signed, to the URL registered with
- *     `setEventEndpoint`. The client verifies it, answers 200 at once and then emits, so a slow
- *     listener never makes Xive retry.
- *
- * Using both is safe: each event carries one id across both routes, and the second copy is dropped.
- *
- * @example
- * const client = new Client({ token: process.env.XIVE_TOKEN, signingSecret: process.env.XIVE_SIGNING_SECRET });
- * client.on("messageCreate", async (message) => {
- *   if (message.isAutomated) return;
- *   if (message.content === "!ping") await message.reply("pong");
+ * ```js
+ * const client = new Client();
+ * client.on(Events.MessageCreate, async (message) => {
+ *   if (message.author.bot) return;
+ *   if (message.content === "!ping") await message.reply("Pong!");
  * });
- * client.listen(3000);
+ * client.login(process.env.XIVE_TOKEN);
+ * ```
+ *
+ * `login(token)` takes the application secret, loads the hubs that installed the application,
+ * connects to the gateway (an outbound websocket — no public URL needed) and emits `ready`.
+ *
+ * Prefer HTTP delivery? `login(token, { gateway: false })`, then serve `client.middleware()` or
+ * `client.listen(port)` with `signingSecret` set. The listeners are the same.
  */
 export class Client extends EventEmitter {
   /**
    * @param {{
-   *   token: string,
-   *   signingSecret?: string,
    *   baseURL?: string,
-   *   fetch?: typeof fetch,
-   *   toleranceSeconds?: number,
+   *   signingSecret?: string,
    *   WebSocket?: any,
-   * }} options  `WebSocket` is only needed on Node < 22, which has no global one (pass `ws`).
+   * }} [options]  `WebSocket` only on Node < 22 (pass the `ws` package); `signingSecret` only for HTTP delivery.
    */
-  constructor({ token, signingSecret, baseURL, fetch, toleranceSeconds, WebSocket }) {
-    // An async listener that rejects lands in [Symbol.for("nodejs.rejection")] below, not in an
-    // unhandled rejection.
+  constructor(options = {}) {
     super({ captureRejections: true });
-    this.rest = new REST({ token, baseURL, fetch });
-    this.signingSecret = signingSecret ?? null;
-    this.toleranceSeconds = toleranceSeconds;
-    /** Filled by `login()`. @type {{ id: string, name: string, client_id: string } | null} */
+    this.options = options;
+    /** The REST, gateway and HTTP layer underneath. @type {Connection | null} */
+    this.core = null;
+    /** @type {ClientUser | null} */
+    this.user = null;
+    /** @type {{ id: string, commands: ApplicationCommandManager } | null} */
     this.application = null;
-    /** @type {Set<string>} */
-    this.seen = new Set();
-    this.WebSocket = WebSocket ?? globalThis.WebSocket;
-    /** @type {Centrifuge | null} */
-    this.gateway = null;
+    this.readyAt = null;
+    this.token = null;
+    this.hubs = new HubManager(this);
+    this.channels = { cache: /** @type {Collection<string, any>} */ (new Collection()), fetch: (/** @type {string} */ id) => this.#fetchChannel(id) };
+    this.users = new UserManager(this);
   }
 
-  /** Check the token and learn who this application is. Optional, but `message.isOwn` needs it. */
-  async login() {
-    const { application } = await this.rest.get("/hubs/applications/@me");
-    this.application = application;
-    this.emit("ready", application);
-    return application;
+  isReady() {
+    return this.readyAt !== null;
   }
 
-  /** Every hub that has installed this application. */
-  async hubs() {
-    return (await this.rest.get("/hubs/applications/@me/hubs")).hubs;
+  get readyTimestamp() {
+    return this.readyAt?.getTime() ?? null;
   }
-
-  /* ── The gateway ───────────────────────────────────────────────────────────────────────── */
 
   /**
-   * Connect to the gateway and start receiving events. Resolves once connected; reconnects on its
-   * own after that, and events missed during a short drop are replayed from history on reconnect.
-   *
-   * @param {{ timeoutMs?: number }} [options]
+   * @param {string} [token] the application secret (`xive_as_…`); defaults to `XIVE_TOKEN`
+   * @param {{ gateway?: boolean }} [options] `gateway: false` for HTTP delivery only
    */
-  async connect({ timeoutMs = 15000 } = {}) {
-    if (this.gateway) return;
-    if (!this.WebSocket) {
-      throw new Error("xive.js: no WebSocket available — use Node 22+, or pass { WebSocket } from the 'ws' package");
-    }
-    const { Centrifuge } = await import("centrifuge");
-    const first = await this.rest.post("/hubs/applications/@me/gateway");
-
-    const gateway = new Centrifuge(first.url, {
-      token: first.token,
-      // Called by centrifuge before the token expires, and after a reconnect that needs a new one.
-      getToken: async () => (await this.rest.post("/hubs/applications/@me/gateway")).token,
-      websocket: this.WebSocket,
+  async login(token = process.env.XIVE_TOKEN, { gateway = true } = {}) {
+    if (!token) throw new Error("xive.js: login() needs the application secret");
+    this.token = token;
+    this.core = new Connection({
+      token,
+      baseURL: this.options.baseURL,
+      signingSecret: this.options.signingSecret,
+      WebSocket: this.options.WebSocket,
     });
-    this.gateway = gateway;
 
-    // Server-side subscription (the token names `app:<id>`), so publications arrive on the client.
-    gateway.on("publication", (ctx) => {
-      const id = ctx.data?.event?.id;
-      if (id && !this.#markSeen(id)) return;
-      this.#dispatch(ctx.data);
-    });
-    gateway.on("connected", () => this.emit("gatewayConnect"));
-    gateway.on("disconnected", (ctx) => this.emit("gatewayDisconnect", ctx));
-    gateway.on("error", (ctx) => this.emit("debug", ctx));
+    const app = await this.core.login();
+    this.user = new ClientUser(this, app);
+    this.application = { id: app.id, commands: new ApplicationCommandManager(this) };
 
-    gateway.connect();
-    await gateway.ready(timeoutMs);
+    await this.hubs.fetch();
+    this.#wire(this.core);
+    if (gateway) await this.core.connect();
+
+    this.readyAt = new Date();
+    this.emit(Events.ClientReady, this);
+    return token;
   }
 
-  /** Close the gateway connection. */
-  disconnect() {
-    this.gateway?.disconnect();
-    this.gateway = null;
+  async destroy() {
+    this.core?.disconnect();
+    this.readyAt = null;
   }
 
-  /** @param {string} key a hub slug or id */
-  hub(key) {
-    return new Hub(this, key);
-  }
-
-  /* ── Registration — part of a deploy, like the command set ─────────────────────────────── */
-
-  /**
-   * Point this application's events at `url`. Idempotent — call it on every deploy. The signing
-   * secret comes back ONLY the first time; store it as `signingSecret`.
-   *
-   * @param {string} url  https only
-   * @param {{ events?: string[] | null }} [options]  null / omitted = every event
-   * @returns {Promise<{ subscription: any, secret?: string }>}
-   */
-  setEventEndpoint(url, { events = null } = {}) {
-    return this.rest.put("/hubs/applications/@me/events", { target_url: url, event_types: events });
-  }
-
-  /** @returns {Promise<{ subscription: any | null, types: Record<string, string> }>} */
-  getEventEndpoint() {
-    return this.rest.get("/hubs/applications/@me/events");
-  }
-
-  removeEventEndpoint() {
-    return this.rest.delete("/hubs/applications/@me/events");
-  }
-
-  /** A new signing secret, shown once. The old one stops verifying immediately. */
-  rotateSigningSecret() {
-    return this.rest.post("/hubs/applications/@me/events/secret");
-  }
-
-  /** Ask Xive to send a signed `ping` to your endpoint now. */
-  testEventEndpoint() {
-    return this.rest.post("/hubs/applications/@me/events/test");
-  }
-
-  /** The last 50 deliveries and how each went. */
-  async deliveries() {
-    return (await this.rest.get("/hubs/applications/@me/events/deliveries")).deliveries;
-  }
-
-  /**
-   * Replace the whole slash-command set. Registration only for now — Xive does not deliver
-   * invocations yet.
-   * @param {any[]} commands
-   */
-  setCommands(commands) {
-    return this.rest.put("/hubs/applications/@me/commands", { commands });
-  }
-
-  /* ── Receiving ─────────────────────────────────────────────────────────────────────────── */
-
-  /**
-   * Handle one delivery, framework-agnostic. Returns the status to answer with; emitting happens
-   * on the next tick, after the caller has had the chance to respond.
-   *
-   * @param {{ headers: Record<string, string | string[] | undefined>, body: string | Buffer }} delivery
-   * @returns {{ status: number }}
-   */
-  receive({ headers, body }) {
-    const h = (/** @type {string} */ name) => {
-      const v = headers[name] ?? headers[name.toLowerCase()];
-      return Array.isArray(v) ? v[0] : v;
-    };
-    const eventId = h("xive-event-id");
-
-    if (!this.signingSecret) {
-      this.#fail(new Error("xive.js: received an event but no signingSecret is configured"));
-      return { status: 500 };
-    }
-    const ok = verifySignature({
-      secret: this.signingSecret,
-      eventId,
-      timestamp: h("xive-event-timestamp"),
-      signature: h("xive-signature"),
-      body,
-      toleranceSeconds: this.toleranceSeconds,
-    });
-    if (!ok) return { status: 401 };
-
-    /** @type {any} */
-    let envelope;
-    try {
-      envelope = JSON.parse(body.toString());
-    } catch {
-      return { status: 400 };
-    }
-
-    // A retry of something already handled (or a copy that came over the gateway): acknowledge it
-    // and do nothing.
-    if (eventId && !this.#markSeen(eventId)) return { status: 200 };
-
-    setImmediate(() => this.#dispatch(envelope));
-    return { status: 200 };
-  }
-
-  /**
-   * A `(req, res)` handler for node:http or Express. With Express, mount it BEFORE any JSON body
-   * parser, or give it `express.raw({ type: "application/json" })` — it needs the raw bytes.
-   */
+  /** An HTTP handler for signed event deliveries (node:http or Express with `express.raw`). */
   middleware() {
-    return (/** @type {any} */ req, /** @type {any} */ res) => {
-      const done = (/** @type {Buffer} */ raw) => {
-        const { status } = this.receive({ headers: req.headers, body: raw });
-        res.statusCode = status;
-        res.end();
-      };
-      if (Buffer.isBuffer(req.body)) return done(req.body);
+    if (!this.core) throw new Error("xive.js: call login() before middleware()");
+    return this.core.middleware();
+  }
 
-      /** @type {Buffer[]} */
-      const chunks = [];
-      let size = 0;
-      req.on("data", (/** @type {Buffer} */ c) => {
-        size += c.length;
-        if (size > MAX_BODY_BYTES) {
-          res.statusCode = 413;
-          res.end();
-          req.destroy();
+  /** Serve signed event deliveries on `port`. Put https in front of it. @param {number} port @param {{ path?: string }} [options] */
+  listen(port, options) {
+    if (!this.core) throw new Error("xive.js: call login() before listen()");
+    return this.core.listen(port, options);
+  }
+
+  /** @param {string} id */
+  async #fetchChannel(id) {
+    const cached = this.channels.cache.get(id);
+    if (cached) return cached;
+    for (const hub of this.hubs.cache.values()) {
+      const found = await hub.channels.fetch(id);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * The hub for an event. A hub that installed the application after `ready` is fetched and
+   * announced with `hubCreate`.
+   *
+   * @param {string} hubId
+   */
+  async #hub(hubId) {
+    const cached = this.hubs.cache.get(hubId);
+    if (cached) return cached;
+    await this.hubs.fetch();
+    const hub = this.hubs.cache.get(hubId);
+    if (hub) this.emit(Events.HubCreate, hub);
+    return hub ?? null;
+  }
+
+  /** @param {any} data message event data */
+  async #channel(data) {
+    const hub = await this.#hub(data.hub_id);
+    if (!hub) return null;
+    return hub.channels.cache.get(data.channel_id) ?? hub.channels.add({ id: data.channel_id, name: data.channel_id });
+  }
+
+  /** @param {Connection} core */
+  #wire(core) {
+    const guarded = (/** @type {(...a: any[]) => Promise<void>} */ fn) => (/** @type {any[]} */ ...args) =>
+      fn(...args).catch((err) => this.#fail(err));
+
+    core.on("gatewayDisconnect", (ctx) => this.emit(Events.Disconnect, ctx));
+    core.on("gatewayConnect", () => this.emit(Events.Reconnect));
+    core.on("debug", (info) => this.emit(Events.Debug, typeof info === "string" ? info : JSON.stringify(info)));
+    core.on("error", (err) => this.#fail(err));
+
+    core.on("event", guarded(async (event, envelope) => {
+      const d = event.data ?? {};
+      switch (event.type) {
+        case "message.created": {
+          const channel = await this.#channel(d);
+          if (!channel) return;
+          const message = channel.messages.add(d);
+          this.emit(Events.MessageCreate, message);
           return;
         }
-        chunks.push(c);
-      });
-      req.on("end", () => {
-        if (!res.writableEnded) done(Buffer.concat(chunks));
-      });
-    };
-  }
-
-  /**
-   * Serve the endpoint yourself. Put it behind https (a reverse proxy or a tunnel) — Xive only
-   * delivers to https URLs.
-   *
-   * @param {number} port
-   * @param {{ path?: string }} [options]
-   */
-  listen(port, { path = "/" } = {}) {
-    const handler = this.middleware();
-    const server = createServer((req, res) => {
-      if (req.method !== "POST" || (req.url ?? "/").split("?")[0] !== path) {
-        res.statusCode = 404;
-        res.end();
-        return;
+        case "message.updated": {
+          const channel = await this.#channel(d);
+          if (!channel) return;
+          const old = channel.messages.cache.get(d.id) ?? new Message(this, channel, { id: d.id });
+          const fresh = channel.messages.add(d);
+          this.emit(Events.MessageUpdate, old, fresh);
+          return;
+        }
+        case "message.deleted": {
+          const channel = await this.#channel(d);
+          if (!channel) return;
+          const message = channel.messages.cache.get(d.id) ?? new Message(this, channel, { id: d.id });
+          channel.messages.cache.delete(d.id);
+          this.emit(Events.MessageDelete, message);
+          return;
+        }
+        case "message.reaction_added":
+        case "message.reaction_removed": {
+          const channel = await this.#channel(d);
+          if (!channel) return;
+          const message = channel.messages.cache.get(d.message_id) ?? new Message(this, channel, { id: d.message_id });
+          const reaction = new MessageReaction(this, message, { emoji: d.emoji });
+          const u = d.user ?? {};
+          const user = u.type === "member"
+            ? this.users.add({ id: u.profile_id, username: u.username ?? null, name: u.name ?? null })
+            : this.users.add({ id: u.application_id, username: u.name, name: u.name, bot: true });
+          this.emit(event.type === "message.reaction_added" ? Events.MessageReactionAdd : Events.MessageReactionRemove, reaction, user);
+          return;
+        }
+        case "member.joined": {
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub) return;
+          const member = await hub.members.fetch(d.member_id).catch(
+            () => new Member(this, hub, { profile_id: d.member_id, member_name: d.member_name })
+          );
+          this.emit(Events.MemberAdd, member);
+          return;
+        }
+        case "member.left":
+        case "member.kicked":
+        case "member.banned": {
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub) return;
+          const member = hub.members.cache.get(d.member_id)
+            ?? new Member(this, hub, { profile_id: d.member_id, member_name: d.member_name });
+          hub.members.cache.delete(d.member_id);
+          if (event.type === "member.banned") {
+            this.emit(Events.BanAdd, { hub, user: member.user, reason: d.reason ?? null });
+          }
+          this.emit(Events.MemberRemove, member);
+          return;
+        }
+        case "member.unbanned": {
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub) return;
+          const user = this.users.add({ id: d.member_id, username: d.member_name, name: d.member_name });
+          this.emit(Events.BanRemove, { hub, user, reason: null });
+          return;
+        }
+        case "interaction.created": {
+          const hub = await this.#hub(d.hub_id);
+          if (!hub) return;
+          this.emit(Events.InteractionCreate, new CommandInteraction(this, hub, d));
+          return;
+        }
+        case "role.assigned":
+        case "role.removed": {
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub) return;
+          const before = hub.members.cache.get(d.member_id)
+            ?? new Member(this, hub, { profile_id: d.member_id, member_name: d.member_name });
+          const after = await hub.members.fetch(d.member_id).catch(() => before);
+          this.emit(Events.MemberUpdate, before, after);
+          return;
+        }
+        default:
+          return;
       }
-      handler(req, res);
-    });
-    return server.listen(port);
-  }
-
-  /** Remember an event id. False if it was already seen. @param {string} id */
-  #markSeen(id) {
-    if (this.seen.has(id)) return false;
-    this.seen.add(id);
-    if (this.seen.size > SEEN_MAX) this.seen.delete(/** @type {string} */ (this.seen.values().next().value));
-    return true;
-  }
-
-  /** @param {any} envelope */
-  #dispatch(envelope) {
-    try {
-      const event = envelope?.event ?? {};
-      const hubId = envelope?.subscription?.hub_id ?? null;
-      this.emit("raw", event, envelope);
-
-      const name = EVENT_NAMES[/** @type {keyof typeof EVENT_NAMES} */ (event.type)];
-      if (!name) return;
-
-      if (event.type === "message.created" || event.type === "message.updated") {
-        this.emit(name, new Message(this, event.data, hubId));
-      } else if (event.type === "message.deleted") {
-        this.emit(name, {
-          id: event.data.id,
-          hubId: event.data.hub_id ?? hubId,
-          channelId: event.data.channel_id,
-          parentChannelId: event.data.parent_channel_id ?? null,
-        });
-      } else {
-        this.emit(name, { hubId, ...event.data });
-      }
-    } catch (err) {
-      this.#fail(err);
-    }
+    }));
   }
 
   /** @param {unknown} err */
@@ -329,8 +241,79 @@ export class Client extends EventEmitter {
 
   /** @param {unknown} err */
   #fail(err) {
-    // An 'error' event with no listener throws — out of a setImmediate, that kills the process.
-    if (this.listenerCount("error") > 0) this.emit("error", err);
+    if (this.listenerCount(Events.Error) > 0) this.emit(Events.Error, err);
     else console.error(err);
+  }
+}
+
+class HubManager {
+  /** @param {Client} client */
+  constructor(client) {
+    this.client = client;
+    /** @type {Collection<string, Hub>} */
+    this.cache = new Collection();
+  }
+
+  /** Every hub that installed the application, with channels and roles loaded. @param {string} [id] */
+  async fetch(id) {
+    const core = /** @type {Connection} */ (this.client.core);
+    for (const data of await core.hubs()) {
+      if (this.cache.has(data.id)) continue;
+      const hub = new Hub(this.client, data);
+      this.cache.set(hub.id, hub);
+      await hub.channels.fetch();
+      // Best-effort: a hub whose roles cannot be read must not stop login.
+      await hub.roles.fetch().catch(() => undefined);
+    }
+    return id ? this.cache.get(id) ?? null : this.cache;
+  }
+}
+
+class UserManager {
+  /** @param {Client} client */
+  constructor(client) {
+    this.client = client;
+    /** @type {Collection<string, User>} */
+    this.cache = new Collection();
+  }
+
+  /** Cache a user, keeping what an earlier, fuller sighting knew. @param {any} data */
+  add(data) {
+    const existing = this.cache.get(data.id);
+    if (existing && (!data.username || data.username === existing.username)) return existing;
+    const user = new User(this.client, data);
+    this.cache.set(user.id, user);
+    return user;
+  }
+
+  /** @param {string} id */
+  async fetch(id) {
+    const cached = this.cache.get(id);
+    if (cached) return cached;
+    for (const hub of this.client.hubs.cache.values()) {
+      const member = await hub.members.fetch(id).catch(() => null);
+      if (member) return member.user;
+    }
+    throw new Error(`Unknown user ${id}`);
+  }
+}
+
+class ApplicationCommandManager {
+  /** @param {Client} client */
+  constructor(client) {
+    this.client = client;
+  }
+
+  /** Replace the whole command set. Builders or their JSON. @param {any[]} commands */
+  async set(commands) {
+    const core = /** @type {Connection} */ (this.client.core);
+    const { commands: saved } = await core.setCommands(commands.map(toCommandJSON));
+    return new Collection((saved ?? []).map((/** @type {any} */ c) => [c.id ?? c.name, c]));
+  }
+
+  async fetch() {
+    const core = /** @type {Connection} */ (this.client.core);
+    const { commands } = await core.rest.get("/hubs/applications/@me/commands");
+    return new Collection(commands.map((/** @type {any} */ c) => [c.id ?? c.name, c]));
   }
 }

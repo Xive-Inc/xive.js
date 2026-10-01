@@ -20,3 +20,16 @@ export class XiveAPIError extends Error {
     this.path = path;
   }
 }
+
+/**
+ * Something Xive does not do — thrown at the call, by name, so a bot ported from elsewhere fails at
+ * the line that needs changing rather than quietly doing nothing.
+ */
+export class XiveUnsupportedError extends Error {
+  /** @param {string} feature @param {string} [hint] */
+  constructor(feature, hint) {
+    super(`${feature} is not supported on Xive${hint ? ` — ${hint}` : ""}.`);
+    this.name = "XiveUnsupportedError";
+    this.feature = feature;
+  }
+}

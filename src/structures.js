@@ -1,235 +1,693 @@
+import { Collection } from "./collection.js";
+import { ChannelKind, Permissions } from "./constants.js";
+import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
 
 /**
+ * The objects a bot works with — Hub, Channel, Member, Role, User, Message — over the Xive app
+ * API. Shaped like discord.js's so a bot written against one reads naturally against the other.
+ *
+ * Ids are uuid strings.
+ *
  * @typedef {import("./client.js").Client} Client
- *
- * @typedef {{ type: "member", profile_id: string, username: string | null, name: string | null }
- *   | { type: "application" | "webhook", application_id: string | null, name: string }} RawAuthor
- *
- * @typedef {string | {
- *   content?: string,
- *   embeds?: unknown[],
- *   media_url?: string,
- *   media_type?: string,
- *   reply_to_id?: string,
- * }} MessageOptions
  */
 
-/** @param {MessageOptions} options */
-function messageBody(options) {
-  return typeof options === "string" ? { content: options } : { ...options };
+const noDMs = () => new XiveUnsupportedError("Direct messages from applications", "reply in a channel instead");
+
+/* ── Permissions ────────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A set of permission keys, with `has()`. Takes Xive keys (`"mod_ban"`) or the friendly names in
+ * `Permissions` (`"BanMembers"`) interchangeably.
+ */
+export class PermissionSet {
+  /** @param {Iterable<string>} [keys] */
+  constructor(keys = []) {
+    this.keys = new Set(keys);
+  }
+
+  /** @param {string} p */
+  static resolve(p) {
+    return Permissions[/** @type {keyof typeof Permissions} */ (p)] ?? p;
+  }
+
+  /** @param {string | string[]} perm */
+  has(perm) {
+    return (Array.isArray(perm) ? perm : [perm]).every((p) => this.keys.has(PermissionSet.resolve(p)));
+  }
+
+  /** @param {string | string[]} perm */
+  any(perm) {
+    return (Array.isArray(perm) ? perm : [perm]).some((p) => this.keys.has(PermissionSet.resolve(p)));
+  }
+
+  toArray() {
+    return [...this.keys];
+  }
 }
 
-/** A message, from an event or from a channel read. */
-export class Message {
+/* ── Users ──────────────────────────────────────────────────────────────────────────────────── */
+
+export class User {
   /**
    * @param {Client} client
-   * @param {any} data  the API's message shape (event `data`, or an item of Get Channel Messages)
-   * @param {string} hubId
+   * @param {{ id: string, username?: string | null, name?: string | null, avatar_url?: string | null, bot?: boolean }} data
    */
-  constructor(client, data, hubId) {
-    /** @readonly */ this.client = client;
-    /** @type {string} */ this.id = data.id;
-    /** @type {string} */ this.hubId = data.hub_id ?? hubId;
-    /** @type {string} */ this.channelId = data.channel_id;
-    /** Set when the message is in a thread: the channel the thread hangs off. @type {string | null} */
-    this.parentChannelId = data.parent_channel_id ?? null;
-    /** @type {string} */ this.content = data.content ?? "";
-    /** @type {Date | null} */ this.createdAt = data.created_at ? new Date(data.created_at) : null;
-    /** @type {boolean} */ this.edited = Boolean(data.edited);
-    /** @type {Date | null} */ this.editedAt = data.edited_at ? new Date(data.edited_at) : null;
-    /** @type {string | null} */ this.replyToId = data.reply_to_id ?? null;
-    /** @type {{ url: string, type: string | null } | null} */ this.attachment = data.attachment ?? null;
-    /** @type {RawAuthor} */ this.author = data.author;
+  constructor(client, data) {
+    this.client = client;
+    this.id = data.id;
+    this.username = data.username ?? data.name ?? "unknown";
+    this.globalName = data.name ?? data.username ?? null;
+    this.avatar = data.avatar_url ?? null;
+    this.bot = Boolean(data.bot);
+    this.system = false;
+    this.discriminator = "0";
   }
 
-  /** True when an application or a webhook wrote it — the check every bot makes first. */
-  get isAutomated() {
-    return this.author?.type !== "member";
-  }
+  get tag() { return this.username; }
+  get displayName() { return this.globalName ?? this.username; }
+  get partial() { return false; }
 
-  /** True when THIS application wrote it. */
-  get isOwn() {
-    return this.author?.type === "application" && this.author.application_id === this.client.application?.id;
-  }
+  displayAvatarURL() { return this.avatar ?? null; }
+  avatarURL() { return this.avatar; }
 
-  get hub() {
-    return this.client.hub(this.hubId);
-  }
+  /** Xive mentions are plain `@username`, so interpolating a user mentions them. */
+  toString() { return `@${this.username}`; }
 
-  get channel() {
-    return this.hub.channel(this.channelId);
-  }
+  send() { return Promise.reject(noDMs()); }
+  createDM() { return Promise.reject(noDMs()); }
+}
 
-  /** Post in the same channel, as a reply to this message. @param {MessageOptions} options */
-  reply(options) {
-    return this.channel.send({ ...messageBody(options), reply_to_id: this.id });
-  }
-
-  /** Edit — only messages this application wrote. @param {MessageOptions} options */
-  edit(options) {
-    return this.client.rest.patch(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}`, messageBody(options));
-  }
-
-  /** Delete. Another author's message needs `conv_delete_messages`. */
-  delete() {
-    return this.client.rest.delete(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}`);
-  }
-
-  /** @param {boolean} [pinned] */
-  pin(pinned = true) {
-    return this.client.rest.put(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/pin`, { pinned });
-  }
-
-  /** React as this application. A unicode emoji, or `custom:<id>` for one of this hub's. @param {string} emoji */
-  react(emoji) {
-    return this.client.rest.put(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/reactions/${enc(emoji)}`);
-  }
-
-  /** Take back this application's own reaction. @param {string} emoji */
-  unreact(emoji) {
-    return this.client.rest.delete(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/reactions/${enc(emoji)}`);
+export class ClientUser extends User {
+  /** @param {Client} client @param {{ id: string, name: string, icon_url?: string | null }} app */
+  constructor(client, app) {
+    super(client, { id: app.id, username: app.name, name: app.name, avatar_url: app.icon_url ?? null, bot: true });
   }
 }
 
-/** A channel in an installed hub. Cheap to create: nothing is fetched until you ask. */
-export class Channel {
-  /** @param {Client} client @param {string} hubId @param {string} id */
-  constructor(client, hubId, id) {
-    /** @readonly */ this.client = client;
-    this.hubId = hubId;
-    this.id = id;
+/* ── Roles ──────────────────────────────────────────────────────────────────────────────────── */
+
+export class Role {
+  /** @param {Client} client @param  {Hub} hub @param {any} data */
+  constructor(client, hub, data) {
+    this.client = client;
+    this.hub = hub;
+    this.id = data.id;
+    this.name = data.name;
+    this.hexColor = data.color || "#000000";
+    this.color = parseInt(String(this.hexColor).replace(/^#/, ""), 16) || 0;
+    this.position = data.rank ?? 0;
+    this.managed = Boolean(data.managed);
+    this.permissions = new PermissionSet(data.permissions ?? []);
+  }
+  toString() { return `@${this.name}`; }
+  edit(/** @type {{ name?: string, color?: string }} */ data) {
+    return this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`, data);
+  }
+  delete() {
+    return this.client.core.rest.delete(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`);
+  }
+}
+
+/* ── Members ────────────────────────────────────────────────────────────────────────────────── */
+
+/** `member.roles` — the member's explicit roles, plus add/remove. */
+class MemberRoleManager {
+  /** @param {Member} member @param {string[]} roleIds */
+  constructor(member, roleIds) {
+    this.member = member;
+    this.roleIds = roleIds;
   }
 
-  get #base() {
-    return `/hubs/${enc(this.hubId)}/app/channels/${enc(this.id)}`;
+  get cache() {
+    const out = new Collection();
+    for (const id of this.roleIds) {
+      out.set(id, this.member.hub.roles.cache.get(id) ?? { id, name: id, position: 0, toString: () => id });
+    }
+    return out;
   }
 
-  /** @param {MessageOptions} options @returns {Promise<{ message: any, warnings?: string[] }>} */
-  send(options) {
-    return this.client.rest.post(`${this.#base}/messages`, messageBody(options));
+  get highest() {
+    return this.cache.reduce((best, r) => (!best || r.position > best.position ? r : best), /** @type {any} */ (null));
+  }
+
+  /** @param {any} roles @returns {string[]} */
+  static ids(roles) {
+    const list = roles instanceof Map ? [...roles.values()] : Array.isArray(roles) ? roles : [roles];
+    return list.map((r) => (typeof r === "string" ? r : r.id));
+  }
+
+  /** @param {string | Role | (string | Role)[] | Collection<string, Role>} roles */
+  async add(roles) {
+    const ids = MemberRoleManager.ids(roles);
+    await this.member.client.core.rest.post(`${this.member.path}/roles`, { role_ids: ids });
+    this.roleIds = [...new Set([...this.roleIds, ...ids])];
+    return this.member;
+  }
+
+  /** @param {string | Role | (string | Role)[] | Collection<string, Role>} roles */
+  async remove(roles) {
+    for (const id of MemberRoleManager.ids(roles)) {
+      await this.member.client.core.rest.delete(`${this.member.path}/roles/${enc(id)}`);
+      this.roleIds = this.roleIds.filter((r) => r !== id);
+    }
+    return this.member;
+  }
+}
+
+export class Member {
+  /** @param {Client} client @param  {Hub} hub @param {any} data a Xive member, or `{ profile_id, username? }` */
+  constructor(client, hub, data) {
+    this.client = client;
+    this.hub = hub;
+    this.id = data.profile_id;
+    this.user = client.users.add({
+      id: data.profile_id,
+      username: data.username ?? data.member_name ?? null,
+      name: data.display_name ?? data.member_name ?? null,
+      avatar_url: data.avatar_url ?? null,
+    });
+    this.nickname = data.nickname ?? null;
+    this.joinedAt = data.joined_at ? new Date(data.joined_at) : null;
+    this.joinedTimestamp = this.joinedAt?.getTime() ?? null;
+    this.communicationDisabledUntil = data.timed_out_until ? new Date(data.timed_out_until) : null;
+    this.roles = new MemberRoleManager(this, data.role_ids ?? []);
+    /** True when built from an event that did not carry the whole member. */
+    this.partial = !data.joined_at;
+  }
+
+  get path() { return `/hubs/${enc(this.hub.id)}/app/members/${enc(this.id)}`; }
+  get displayName() { return this.nickname ?? this.user.displayName; }
+  get communicationDisabledTimestamp() { return this.communicationDisabledUntil?.getTime() ?? null; }
+  /** The union of the member's roles' permissions, as far as the roles list reports them. */
+  get permissions() {
+    const keys = new Set();
+    for (const role of this.roles.cache.values()) for (const k of role.permissions?.keys ?? []) keys.add(k);
+    return new PermissionSet(keys);
+  }
+
+  isCommunicationDisabled() {
+    return Boolean(this.communicationDisabledUntil && this.communicationDisabledUntil > new Date());
+  }
+
+  toString() { return this.user.toString(); }
+
+  fetch() { return this.hub.members.fetch(this.id); }
+
+  /** @param {string} [reason] */
+  async kick(reason) { await this.client.core.rest.post(`${this.path}/kick`, { reason }); return this; }
+
+  /** @param {{ reason?: string, deleteMessageSeconds?: number }} [options] */
+  async ban(options = {}) { await this.client.core.rest.post(`${this.path}/ban`, { reason: options.reason }); return this; }
+
+  /** @param {number | null} ms how long, or null to lift @param {string} [_reason] */
+  async timeout(ms, _reason) {
+    const minutes = ms ? Math.max(1, Math.ceil(ms / 60000)) : 0;
+    await this.client.core.rest.patch(this.path, { muted_until_minutes: minutes });
+    this.communicationDisabledUntil = minutes ? new Date(Date.now() + minutes * 60000) : null;
+    return this;
+  }
+
+  /** @param {Date | number | null} until @param {string} [reason] */
+  disableCommunicationUntil(until, reason) {
+    return this.timeout(until ? new Date(until).getTime() - Date.now() : null, reason);
+  }
+
+  /** @param {string | null} nick */
+  async setNickname(nick) {
+    await this.client.core.rest.patch(this.path, { nickname: nick });
+    this.nickname = nick;
+    return this;
+  }
+
+  /** @param {{ nick?: string | null, roles?: any, communicationDisabledUntil?: Date | number | null }} data */
+  async edit(data) {
+    if ("nick" in data) await this.setNickname(data.nick ?? null);
+    if ("communicationDisabledUntil" in data) await this.disableCommunicationUntil(data.communicationDisabledUntil ?? null);
+    if ("roles" in data) {
+      const want = MemberRoleManager.ids(data.roles);
+      const drop = this.roles.roleIds.filter((r) => !want.includes(r));
+      const add = want.filter((r) => !this.roles.roleIds.includes(r));
+      if (add.length) await this.roles.add(add);
+      if (drop.length) await this.roles.remove(drop);
+    }
+    return this;
+  }
+
+  send() { return Promise.reject(noDMs()); }
+}
+
+/* ── Messages ───────────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Send options (a string, or `{ content, embeds, reply }`) → the Xive message body. Refuses what
+ * has no Xive equivalent, by name.
+ *
+ * @param {Client} client
+ * @param {Hub | null} hub
+ * @param {any} options
+ */
+export function toXiveMessage(client, hub, options) {
+  const o = typeof options === "string" ? { content: options } : options instanceof Object ? options : { content: String(options) };
+  if (o.components?.length) {
+    throw new XiveUnsupportedError("Message components (buttons, select menus)", "send text or embeds for now");
+  }
+  if (o.files?.length || o.attachments?.length) {
+    throw new XiveUnsupportedError("File uploads from applications", "link the file, or put an image URL in an embed");
+  }
+  if (o.poll) throw new XiveUnsupportedError("Polls");
+  if (o.stickers?.length) throw new XiveUnsupportedError("Stickers from applications");
+
+  /** @type {Record<string, unknown>} */
+  const body = {};
+  if (o.content !== undefined && o.content !== null) body.content = translateMentions(client, hub, String(o.content));
+  if (o.embeds?.length) body.embeds = o.embeds.map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e));
+  const replyTo = o.reply?.messageReference ?? o.messageReference;
+  if (replyTo) body.reply_to_id = typeof replyTo === "string" ? replyTo : replyTo.messageId ?? replyTo.id;
+  return body;
+}
+
+/**
+ * `<@id>`, `<@&id>` and `<#id>` tokens → Xive's plain `@username`, `@Role` and `#channel`, from
+ * what is cached. Xive mentions are plain text; the tokens are accepted because bots written for
+ * other platforms build them everywhere. A token whose target is not cached is left as written.
+ *
+ * @param {Client} client @param {Hub | null} hub @param {string} content
+ */
+export function translateMentions(client, hub, content) {
+  return content.replace(/<(@!?|@&|#)([0-9a-fA-F-]{8,})>/g, (whole, kind, id) => {
+    if (kind === "#") return client.channels.cache.get(id)?.toString() ?? whole;
+    if (kind === "@&") return hub?.roles.cache.get(id)?.toString() ?? whole;
+    return client.users.cache.get(id)?.toString() ?? whole;
+  });
+}
+
+export class Message {
+  /** @param {Client} client @param {Channel} channel @param {any} data Xive message data, possibly partial */
+  constructor(client, channel, data) {
+    this.client = client;
+    this.channel = channel;
+    this.channelId = channel.id;
+    this.hub = channel.hub;
+    this.hubId = channel.hub.id;
+    this.id = data.id;
+    this.partial = data.content === undefined;
+    this.content = data.content ?? null;
+    this.createdAt = data.created_at ? new Date(data.created_at) : null;
+    this.createdTimestamp = this.createdAt?.getTime() ?? null;
+    this.editedAt = data.edited_at ? new Date(data.edited_at) : null;
+    this.editedTimestamp = this.editedAt?.getTime() ?? null;
+    this.reference = data.reply_to_id
+      ? { messageId: data.reply_to_id, channelId: channel.id, hubId: channel.hub.id }
+      : null;
+    this.attachments = new Collection();
+    if (data.attachment?.url) {
+      this.attachments.set(data.attachment.url, {
+        id: data.attachment.url, url: data.attachment.url, proxyURL: data.attachment.url,
+        contentType: data.attachment.type ?? null, name: data.attachment.url.split("/").pop(),
+      });
+    }
+    this.embeds = data.embeds ?? [];
+    this.components = [];
+    this.pinned = Boolean(data.pinned);
+    this.system = false;
+    this.tts = false;
+
+    const a = data.author;
+    /** @type {User | null} */
+    this.author = null;
+    /** @type {Member | null} */
+    this.member = null;
+    this.webhookId = null;
+    if (a?.type === "member") {
+      this.author = client.users.add({ id: a.profile_id, username: a.username, name: a.name });
+      this.member = channel.hub.members.cache.get(a.profile_id)
+        ?? new Member(client, channel.hub, { profile_id: a.profile_id, username: a.username, display_name: a.name });
+    } else if (a) {
+      this.author = client.users.add({ id: a.application_id ?? `webhook:${a.name}`, username: a.name, name: a.name, bot: true });
+      if (a.type === "webhook") this.webhookId = a.application_id ?? a.name;
+    }
+
+    const content = this.content ?? "";
+    this.mentions = {
+      everyone: /(^|\s)@(everyone|here)\b/.test(content),
+      users: new Collection(),
+      roles: new Collection(),
+      channels: new Collection(),
+      /** Xive mentions are `@username` / `@Role` in the text, so this reads the text. @param {any} target */
+      has: (target) => {
+        if (!target) return false;
+        const label = typeof target.toString === "function" ? target.toString() : `@${target}`;
+        return label.length > 1 && content.includes(label);
+      },
+    };
+  }
+
+  get url() { return `https://hub.thexive.com/hubs/${this.hubId}/channels/${this.channelId}?message=${this.id}`; }
+  get editable() { return this.author?.id === this.client.user?.id; }
+  get deletable() { return true; }
+  get pinnable() { return true; }
+  toString() { return this.content ?? ""; }
+
+  get #path() { return `/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}`; }
+
+  async fetch() {
+    const fresh = await this.channel.messages.fetch(this.id);
+    Object.assign(this, fresh);
+    return this;
+  }
+
+  /** @param {any} options */
+  reply(options) {
+    const o = typeof options === "string" ? { content: options } : { ...options };
+    return this.channel.send({ ...o, reply: { messageReference: this.id } });
+  }
+
+  /** @param {any} options */
+  async edit(options) {
+    const body = toXiveMessage(this.client, this.hub, options);
+    const { message } = await this.client.core.rest.patch(this.#path, body);
+    if (message?.content !== undefined) this.content = message.content;
+    this.editedAt = new Date();
+    this.editedTimestamp = this.editedAt.getTime();
+    return this;
+  }
+
+  async delete() {
+    await this.client.core.rest.delete(this.#path);
+    return this;
+  }
+
+  /** @param {string | { id?: string | null, name?: string | null }} emoji */
+  async react(emoji) {
+    const value = typeof emoji === "string" ? emoji : emoji.id ? `custom:${emoji.id}` : String(emoji.name);
+    await this.client.core.rest.put(`${this.#path}/reactions/${enc(value)}`);
+    return new MessageReaction(this.client, this, { emoji: value });
+  }
+
+  async pin() { await this.client.core.rest.put(`${this.#path}/pin`, { pinned: true }); this.pinned = true; return this; }
+  async unpin() { await this.client.core.rest.put(`${this.#path}/pin`, { pinned: false }); this.pinned = false; return this; }
+
+  /** @param {{ name: string }} options */
+  async startThread(options) {
+    const { thread } = await this.client.core.rest.post(
+      `/hubs/${enc(this.hubId)}/app/channels/${enc(this.channelId)}/threads`,
+      { name: options.name, origin_message_id: this.id }
+    );
+    return this.hub.channels.add({ id: thread.id, name: thread.name, kind: "thread" });
+  }
+
+  async fetchReference() {
+    if (!this.reference) throw new Error("This message is not a reply");
+    return this.channel.messages.fetch(this.reference.messageId);
+  }
+}
+
+export class MessageReaction {
+  /** @param {Client} client @param {Message} message @param {{ emoji: string }} data */
+  constructor(client, message, data) {
+    this.client = client;
+    this.message = message;
+    const custom = data.emoji.startsWith("custom:") ? data.emoji.slice(7) : null;
+    this.emoji = {
+      id: custom,
+      name: custom ? null : data.emoji,
+      identifier: data.emoji,
+      toString: () => (custom ? `:custom:` : data.emoji),
+    };
+    this.count = null;
+    this.me = false;
+    this.partial = true;
+  }
+  async remove() {
+    await this.client.core.rest.delete(`/hubs/${enc(this.message.hubId)}/app/messages/${enc(this.message.id)}/reactions/${enc(this.emoji.identifier)}`);
+    return this;
+  }
+  fetch() { return Promise.resolve(this); }
+}
+
+/* ── Channels ───────────────────────────────────────────────────────────────────────────────── */
+
+class MessageManager {
+  /** @param {Channel} channel */
+  constructor(channel) {
+    this.channel = channel;
+    /** @type {Collection<string, Message>} */
+    this.cache = new Collection();
+  }
+
+  /** @param {any} data */
+  add(data) {
+    const message = new Message(this.channel.client, this.channel, data);
+    this.cache.set(message.id, message);
+    if (this.cache.size > 200) this.cache.delete(/** @type {string} */ (this.cache.firstKey()));
+    return message;
   }
 
   /**
-   * Up to 100 messages, oldest first: the newest, or the page `before` / `after` a message id.
-   * @param {{ limit?: number, before?: string, after?: string }} [options]
-   * @returns {Promise<Message[]>}
+   * `fetch(id)` → one Message. `fetch({ limit, before, after })` → a Collection, newest first as
+   * discord.js does.
+   *
+   * @param {string | { limit?: number, before?: string, after?: string, cache?: boolean }} [query]
    */
-  async messages({ limit, before, after } = {}) {
-    const { messages } = await this.client.rest.get(`${this.#base}/messages`, { limit, before, after });
-    return messages.map((/** @type {any} */ m) => new Message(this.client, m, this.hubId));
+  async fetch(query) {
+    const rest = this.channel.client.core.rest;
+    const hub = enc(this.channel.hub.id);
+    if (typeof query === "string") {
+      const { message } = await rest.get(`/hubs/${hub}/app/messages/${enc(query)}`);
+      return this.add(message);
+    }
+    const { messages } = await rest.get(`/hubs/${hub}/app/channels/${enc(this.channel.id)}/messages`, {
+      limit: query?.limit, before: query?.before, after: query?.after,
+    });
+    const out = new Collection();
+    for (const m of [...messages].reverse()) out.set(m.id, this.add(m));
+    return out;
   }
+
+  /** @param {string | Message} message */
+  async delete(message) {
+    const id = typeof message === "string" ? message : message.id;
+    await this.channel.client.core.rest.delete(`/hubs/${enc(this.channel.hub.id)}/app/messages/${enc(id)}`);
+  }
+}
+
+export class Channel {
+  /** @param {Client} client @param  {Hub} hub @param {any} data */
+  constructor(client, hub, data) {
+    this.client = client;
+    this.hub = hub;
+    this.hubId = hub.id;
+    this.id = data.id;
+    this.name = data.name ?? data.id;
+    this.topic = data.topic ?? null;
+    this.parentId = data.category_id ?? null;
+    /** One of ChannelKind. */
+    this.kind = data.kind ?? ChannelKind.Text;
+    this.messages = new MessageManager(this);
+    this.threads = {
+      /** @param {{ name: string, startMessage?: string | Message }} options */
+      create: async (options) => {
+        const origin = options.startMessage;
+        const { thread } = await client.core.rest.post(`/hubs/${enc(hub.id)}/app/channels/${enc(this.id)}/threads`, {
+          name: options.name,
+          origin_message_id: origin ? (typeof origin === "string" ? origin : origin.id) : undefined,
+        });
+        return hub.channels.add({ id: thread.id, name: thread.name, kind: "thread" });
+      },
+    };
+  }
+
+  isTextBased() { return this.kind !== ChannelKind.RolePicker; }
+  isThread() { return this.kind === ChannelKind.Thread; }
+  isVoiceBased() { return this.kind === ChannelKind.LiveRoom; }
+  toString() { return `#${this.name}`; }
+
+  /** @param {any} options */
+  async send(options) {
+    const body = toXiveMessage(this.client, this.hub, options);
+    const { message } = await this.client.core.rest.post(
+      `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body
+    );
+    return this.messages.add({
+      created_at: new Date().toISOString(), reply_to_id: body.reply_to_id ?? null, embeds: body.embeds, ...message,
+    });
+  }
+
+  /**
+   * Delete several messages. Xive has no bulk route, so this deletes one by one — fine for the
+   * dozens a purge command removes, not for thousands.
+   *
+   * @param {number | string[] | Collection<string, Message>} messages
+   */
+  async bulkDelete(messages) {
+    /** @type {string[]} */
+    let ids;
+    if (typeof messages === "number") {
+      const page = /** @type {Collection<string, Message>} */ (await this.messages.fetch({ limit: Math.min(messages, 100) }));
+      ids = [...page.keys()];
+    } else if (messages instanceof Map) {
+      ids = [...messages.keys()];
+    } else {
+      ids = messages.map((/** @type {any} */ m) => (typeof m === "string" ? m : m.id));
+    }
+    const out = new Collection();
+    for (const id of ids) {
+      await this.messages.delete(id);
+      out.set(id, { id });
+    }
+    return out;
+  }
+
+  sendTyping() { return Promise.resolve(); }
 
   /** @param {boolean} [locked] */
-  lock(locked = true) {
-    return this.client.rest.put(`${this.#base}/lock`, { locked });
-  }
-
-  /** @param {string} name @param {{ originMessageId?: string }} [options] */
-  createThread(name, { originMessageId } = {}) {
-    return this.client.rest.post(`${this.#base}/threads`, { name, origin_message_id: originMessageId });
+  async setLocked(locked = true) {
+    await this.client.core.rest.put(`/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/lock`, { locked });
+    return this;
   }
 }
 
-/** A member of an installed hub, addressed by profile id. */
-export class Member {
-  /** @param {Client} client @param {string} hubId @param {string} profileId */
-  constructor(client, hubId, profileId) {
-    /** @readonly */ this.client = client;
-    this.hubId = hubId;
-    this.profileId = profileId;
+/* ── Hubs ───────────────────────────────────────────────────────────────────────────────────── */
+
+class ChannelManager {
+  /** @param  {Hub} hub */
+  constructor(hub) {
+    this.hub = hub;
+    /** @type {Collection<string, Channel>} */
+    this.cache = new Collection();
   }
 
-  get #base() {
-    return `/hubs/${enc(this.hubId)}/app/members/${enc(this.profileId)}`;
+  /** @param {any} data */
+  add(data) {
+    const existing = this.cache.get(data.id);
+    if (existing) return existing;
+    const channel = new Channel(this.hub.client, this.hub, data);
+    this.cache.set(channel.id, channel);
+    this.hub.client.channels.cache.set(channel.id, channel);
+    return channel;
   }
 
-  /** @param {string} [reason] */
-  kick(reason) {
-    return this.client.rest.post(`${this.#base}/kick`, { reason });
+  /** @param {string} [id] */
+  async fetch(id) {
+    const { channels } = await this.hub.client.core.rest.get(`/hubs/${enc(this.hub.id)}/app/channels`);
+    for (const c of channels) this.add(c);
+    if (id) return this.cache.get(id) ?? null;
+    return this.cache;
   }
 
-  /** @param {string} [reason] */
-  ban(reason) {
-    return this.client.rest.post(`${this.#base}/ban`, { reason });
-  }
-
-  /** @param {string} reason */
-  warn(reason) {
-    return this.client.rest.post(`${this.#base}/warnings`, { reason });
-  }
-
-  /** Time out for `minutes` (0 lifts it; at most 40320, four weeks). @param {number} minutes */
-  timeout(minutes) {
-    return this.client.rest.patch(this.#base, { muted_until_minutes: minutes });
-  }
-
-  /** @param {string | null} nickname */
-  setNickname(nickname) {
-    return this.client.rest.patch(this.#base, { nickname });
-  }
-
-  /** @param {string[]} roleIds */
-  addRoles(roleIds) {
-    return this.client.rest.post(`${this.#base}/roles`, { role_ids: roleIds });
-  }
-
-  /** @param {string} roleId */
-  removeRole(roleId) {
-    return this.client.rest.delete(`${this.#base}/roles/${enc(roleId)}`);
+  /** @param {{ name: string, kind?: string, topic?: string, parent?: string }} options */
+  async create(options) {
+    const { channel } = await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/channels`, {
+      name: options.name, kind: options.kind ?? ChannelKind.Text, topic: options.topic, category_id: options.parent,
+    });
+    return this.add(channel);
   }
 }
 
-/** A hub that has installed this application. `key` is its slug or id. */
+class MemberManager {
+  /** @param  {Hub} hub */
+  constructor(hub) {
+    this.hub = hub;
+    /** @type {Collection<string, Member>} */
+    this.cache = new Collection();
+  }
+
+  /** @param {any} data */
+  add(data) {
+    const member = new Member(this.hub.client, this.hub, data);
+    if (!member.partial) this.cache.set(member.id, member);
+    return member;
+  }
+
+  /**
+   * `fetch(id)` → one Member. `fetch()` → every member, paging through the roster.
+   * @param {string | { user?: string, limit?: number }} [query]
+   */
+  async fetch(query) {
+    const rest = this.hub.client.core.rest;
+    const id = typeof query === "string" ? query : query?.user;
+    if (id) {
+      const { member } = await rest.get(`/hubs/${enc(this.hub.id)}/app/members/${enc(id)}`);
+      return this.add(member);
+    }
+    const max = typeof query === "object" && query?.limit ? query.limit : Infinity;
+    const out = new Collection();
+    for (let offset = 0; out.size < max; offset += 200) {
+      const { members } = await rest.get(`/hubs/${enc(this.hub.id)}/app/members`, { limit: 200, offset });
+      for (const m of members) {
+        if (out.size >= max) break;
+        out.set(m.profile_id, this.add(m));
+      }
+      if (members.length < 200) break;
+    }
+    return out;
+  }
+
+  /** @param {string | Member | User} user @param {string} [reason] */
+  async kick(user, reason) {
+    await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/members/${enc(user instanceof Object ? user.id : user)}/kick`, { reason });
+  }
+
+  /** @param {string | Member | User} user @param {{ reason?: string }} [options] */
+  async ban(user, options = {}) {
+    await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/members/${enc(user instanceof Object ? user.id : user)}/ban`, { reason: options.reason });
+  }
+
+  unban() {
+    return Promise.reject(new XiveUnsupportedError("Unbanning from an application", "a hub moderator lifts bans in Settings"));
+  }
+}
+
+class RoleManager {
+  /** @param  {Hub} hub */
+  constructor(hub) {
+    this.hub = hub;
+    /** @type {Collection<string, Role>} */
+    this.cache = new Collection();
+    /** @type {Role | null} */
+    this.everyone = null;
+  }
+
+  /** @param {string} [id] */
+  async fetch(id) {
+    const { roles } = await this.hub.client.core.rest.get(`/hubs/${enc(this.hub.id)}/app/roles`);
+    this.cache.clear();
+    for (const r of roles) {
+      const role = new Role(this.hub.client, this.hub, r);
+      this.cache.set(role.id, role);
+      if (r.is_default) this.everyone = role;
+    }
+    return id ? this.cache.get(id) ?? null : this.cache;
+  }
+
+  /** @param {{ name: string, color?: string }} options */
+  async create(options) {
+    const { role } = await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/roles`, options);
+    const created = new Role(this.hub.client, this.hub, role);
+    this.cache.set(created.id, created);
+    return created;
+  }
+
+  get highest() {
+    return this.cache.reduce((best, r) => (!best || r.position > best.position ? r : best), /** @type {Role | null} */ (null));
+  }
+}
+
 export class Hub {
-  /** @param {Client} client @param {string} key */
-  constructor(client, key) {
-    /** @readonly */ this.client = client;
-    this.key = key;
+  /** @param {Client} client @param {any} data an entry of GET /hubs/applications/@me/hubs */
+  constructor(client, data) {
+    this.client = client;
+    this.id = data.id;
+    this.name = data.name;
+    this.description = data.description ?? null;
+    this.slug = data.slug ?? null;
+    /** When this hub installed the application. */
+    this.joinedAt = data.installed_at ? new Date(data.installed_at) : null;
+    this.channels = new ChannelManager(this);
+    this.members = new MemberManager(this);
+    this.roles = new RoleManager(this);
   }
 
-  get #base() {
-    return `/hubs/${enc(this.key)}/app`;
-  }
-
-  /** @returns {Promise<any>} */
-  async fetch() {
-    return (await this.client.rest.get(`${this.#base}/hub`)).hub;
-  }
-
-  /** The channels this application can see. @returns {Promise<any[]>} */
-  async channels() {
-    return (await this.client.rest.get(`${this.#base}/channels`)).channels;
-  }
-
-  /** @param {string} channelId */
-  channel(channelId) {
-    return new Channel(this.client, this.key, channelId);
-  }
-
-  /** @param {{ limit?: number, offset?: number }} [options] @returns {Promise<any[]>} */
-  async members({ limit, offset } = {}) {
-    return (await this.client.rest.get(`${this.#base}/members`, { limit, offset })).members;
-  }
-
-  /** @param {string} profileId */
-  member(profileId) {
-    return new Member(this.client, this.key, profileId);
-  }
-
-  /** One member, with `role_ids`. @param {string} profileId @returns {Promise<any>} */
-  async fetchMember(profileId) {
-    return (await this.client.rest.get(`${this.#base}/members/${enc(profileId)}`)).member;
-  }
-
-  /** One message, by id. @param {string} messageId */
-  async fetchMessage(messageId) {
-    const { message } = await this.client.rest.get(`${this.#base}/messages/${enc(messageId)}`);
-    return new Message(this.client, message, this.key);
-  }
-
-  /** @returns {Promise<any[]>} */
-  async roles() {
-    return (await this.client.rest.get(`${this.#base}/roles`)).roles;
-  }
+  toString() { return this.name; }
 }

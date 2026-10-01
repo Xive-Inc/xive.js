@@ -1,33 +1,37 @@
-// The smallest useful bot: answers !ping, and logs everything else it hears.
+// The smallest useful bot: answers !ping, welcomes newcomers, logs what it hears.
 //
-//   XIVE_TOKEN=xive_as_… XIVE_SIGNING_SECRET=… node examples/ping-bot.js
+//   XIVE_TOKEN=xive_as_… node examples/ping-bot.js
 //
-// Listens on :3000 (PORT to change). Xive only delivers to https, so put a tunnel in front:
-//   cloudflared tunnel --url http://localhost:3000
-// then run register.js with the https URL it prints.
-import { Client } from "../src/index.js";
+// Connects out over the gateway — no public URL, no tunnel.
+import { Client, Events, EmbedBuilder, Colors } from "../src/index.js";
 
-const client = new Client({
-  token: process.env.XIVE_TOKEN,
-  signingSecret: process.env.XIVE_SIGNING_SECRET,
+const client = new Client();
+
+client.once(Events.ClientReady, (c) => {
+  console.log(`logged in as ${c.user.tag}, in ${c.hubs.cache.size} hub(s)`);
 });
 
-client.on("ready", (app) => console.log(`logged in as ${app.name}`));
-client.on("ping", () => console.log("ping received — endpoint and secret are working"));
-client.on("raw", (event) => console.log(`event ${event.type} ${event.id}`));
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  console.log(`[${message.hub.name} ${message.channel}] ${message.author.username}: ${message.content}`);
 
-client.on("messageCreate", async (message) => {
-  if (message.isAutomated) return;
-  console.log(`[${message.hubId}/${message.channelId}] ${message.author.name}: ${message.content}`);
-  if (message.content.trim() === "!ping") {
-    await message.reply("pong");
+  if (message.content === "!ping") {
+    await message.reply("Pong!");
+  }
+  if (message.content === "!hub") {
+    const embed = new EmbedBuilder()
+      .setTitle(message.hub.name)
+      .setColor(Colors.Blurple)
+      .addFields({ name: "Channels", value: String(message.hub.channels.cache.size), inline: true });
+    await message.channel.send({ embeds: [embed] });
   }
 });
 
-client.on("memberJoin", (member) => console.log("member joined", member));
-client.on("error", (err) => console.error(err));
+client.on(Events.MemberAdd, async (member) => {
+  const general = member.hub.channels.cache.find((c) => c.name === "general");
+  await general?.send(`Welcome, ${member}!`);
+});
 
-await client.login();
-const port = Number(process.env.PORT) || 3000;
-client.listen(port);
-console.log(`listening on :${port}`);
+client.on(Events.Error, (err) => console.error(err));
+
+client.login(process.env.XIVE_TOKEN);
