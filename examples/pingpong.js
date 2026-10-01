@@ -44,6 +44,8 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Buttons, menus and forms arrive here too; they are handled (and logged) further down.
+  if (!interaction.isChatInputCommand()) return;
   console.log(`/${interaction.commandName} from ${interaction.user.username} in ${interaction.hub.name}`);
 
   if (interaction.commandName === "ping") {
