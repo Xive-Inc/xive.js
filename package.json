@@ -1,0 +1,21 @@
+{
+  "name": "xive.js",
+  "version": "0.1.0",
+  "description": "Build bots for Xive hubs — a REST client and a signed event receiver.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test src/*.test.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,22 @@
+/**
+ * A refusal from the Xive API, carrying the envelope's `error.type` and `error.code` — the fields
+ * the API asks clients to branch on, rather than the HTTP status.
+ */
+export class XiveAPIError extends Error {
+  /**
+   * @param {{ type?: string, code?: string, message?: string, requestId?: string }} error
+   * @param {number} status
+   * @param {string} method
+   * @param {string} path
+   */
+  constructor(error, status, method, path) {
+    super(`${error.message ?? "Request failed"} (${method} ${path} → ${status})`);
+    this.name = "XiveAPIError";
+    this.type = error.type ?? "SystemError";
+    this.code = error.code ?? null;
+    this.status = status;
+    this.requestId = error.requestId ?? null;
+    this.method = method;
+    this.path = path;
+  }
+}
