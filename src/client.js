@@ -4,6 +4,8 @@ import { REST } from "./rest.js";
 import { verifySignature } from "./verify.js";
 import { Hub, Message } from "./structures.js";
 
+/** @typedef {import("centrifuge").Centrifuge} Centrifuge */
+
 /**
  * Xive event type → the name a listener subscribes to. Anything not listed is still emitted as
  * `raw`, so a new server-side type is usable before this table learns about it.
@@ -12,6 +14,8 @@ export const EVENT_NAMES = Object.freeze({
   "message.created": "messageCreate",
   "message.updated": "messageUpdate",
   "message.deleted": "messageDelete",
+  "message.reaction_added": "messageReactionAdd",
+  "message.reaction_removed": "messageReactionRemove",
   "member.joined": "memberJoin",
   "member.left": "memberLeave",
   "member.kicked": "memberKick",
@@ -31,9 +35,15 @@ const MAX_BODY_BYTES = 1024 * 1024;
 /**
  * A Xive bot.
  *
- * Xive PUSHES events: it POSTs each one, signed, to the URL you register with `setEventEndpoint`.
- * The client verifies the signature, drops retries it has already handled, answers 200 at once and
- * then emits — so a slow listener can never make Xive think the delivery failed and send it again.
+ * Events reach it one of two ways, and the listeners are the same either way:
+ *
+ *   - `connect()` — the GATEWAY. The bot opens an outbound websocket, like discord.js. No public
+ *     URL, no tunnel; runs from a laptop.
+ *   - `listen()` / `middleware()` — HTTP. Xive POSTs each event, signed, to the URL registered with
+ *     `setEventEndpoint`. The client verifies it, answers 200 at once and then emits, so a slow
+ *     listener never makes Xive retry.
+ *
+ * Using both is safe: each event carries one id across both routes, and the second copy is dropped.
  *
  * @example
  * const client = new Client({ token: process.env.XIVE_TOKEN, signingSecret: process.env.XIVE_SIGNING_SECRET });
@@ -51,9 +61,10 @@ export class Client extends EventEmitter {
    *   baseURL?: string,
    *   fetch?: typeof fetch,
    *   toleranceSeconds?: number,
-   * }} options
+   *   WebSocket?: any,
+   * }} options  `WebSocket` is only needed on Node < 22, which has no global one (pass `ws`).
    */
-  constructor({ token, signingSecret, baseURL, fetch, toleranceSeconds }) {
+  constructor({ token, signingSecret, baseURL, fetch, toleranceSeconds, WebSocket }) {
     // An async listener that rejects lands in [Symbol.for("nodejs.rejection")] below, not in an
     // unhandled rejection.
     super({ captureRejections: true });
@@ -64,6 +75,9 @@ export class Client extends EventEmitter {
     this.application = null;
     /** @type {Set<string>} */
     this.seen = new Set();
+    this.WebSocket = WebSocket ?? globalThis.WebSocket;
+    /** @type {Centrifuge | null} */
+    this.gateway = null;
   }
 
   /** Check the token and learn who this application is. Optional, but `message.isOwn` needs it. */
@@ -72,6 +86,55 @@ export class Client extends EventEmitter {
     this.application = application;
     this.emit("ready", application);
     return application;
+  }
+
+  /** Every hub that has installed this application. */
+  async hubs() {
+    return (await this.rest.get("/hubs/applications/@me/hubs")).hubs;
+  }
+
+  /* ── The gateway ───────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Connect to the gateway and start receiving events. Resolves once connected; reconnects on its
+   * own after that, and events missed during a short drop are replayed from history on reconnect.
+   *
+   * @param {{ timeoutMs?: number }} [options]
+   */
+  async connect({ timeoutMs = 15000 } = {}) {
+    if (this.gateway) return;
+    if (!this.WebSocket) {
+      throw new Error("xive.js: no WebSocket available — use Node 22+, or pass { WebSocket } from the 'ws' package");
+    }
+    const { Centrifuge } = await import("centrifuge");
+    const first = await this.rest.post("/hubs/applications/@me/gateway");
+
+    const gateway = new Centrifuge(first.url, {
+      token: first.token,
+      // Called by centrifuge before the token expires, and after a reconnect that needs a new one.
+      getToken: async () => (await this.rest.post("/hubs/applications/@me/gateway")).token,
+      websocket: this.WebSocket,
+    });
+    this.gateway = gateway;
+
+    // Server-side subscription (the token names `app:<id>`), so publications arrive on the client.
+    gateway.on("publication", (ctx) => {
+      const id = ctx.data?.event?.id;
+      if (id && !this.#markSeen(id)) return;
+      this.#dispatch(ctx.data);
+    });
+    gateway.on("connected", () => this.emit("gatewayConnect"));
+    gateway.on("disconnected", (ctx) => this.emit("gatewayDisconnect", ctx));
+    gateway.on("error", (ctx) => this.emit("debug", ctx));
+
+    gateway.connect();
+    await gateway.ready(timeoutMs);
+  }
+
+  /** Close the gateway connection. */
+  disconnect() {
+    this.gateway?.disconnect();
+    this.gateway = null;
   }
 
   /** @param {string} key a hub slug or id */
@@ -164,12 +227,9 @@ export class Client extends EventEmitter {
       return { status: 400 };
     }
 
-    // A retry of something already handled: acknowledge it and do nothing.
-    if (eventId && this.seen.has(eventId)) return { status: 200 };
-    if (eventId) {
-      this.seen.add(eventId);
-      if (this.seen.size > SEEN_MAX) this.seen.delete(this.seen.values().next().value);
-    }
+    // A retry of something already handled (or a copy that came over the gateway): acknowledge it
+    // and do nothing.
+    if (eventId && !this.#markSeen(eventId)) return { status: 200 };
 
     setImmediate(() => this.#dispatch(envelope));
     return { status: 200 };
@@ -225,6 +285,14 @@ export class Client extends EventEmitter {
       handler(req, res);
     });
     return server.listen(port);
+  }
+
+  /** Remember an event id. False if it was already seen. @param {string} id */
+  #markSeen(id) {
+    if (this.seen.has(id)) return false;
+    this.seen.add(id);
+    if (this.seen.size > SEEN_MAX) this.seen.delete(/** @type {string} */ (this.seen.values().next().value));
+    return true;
   }
 
   /** @param {any} envelope */

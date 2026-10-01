@@ -14,6 +14,9 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "centrifuge": "^5.7.0"
+  },
   "scripts": {
     "test": "node --test src/*.test.js"
   },

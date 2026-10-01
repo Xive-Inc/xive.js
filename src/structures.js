@@ -80,6 +80,16 @@ export class Message {
   pin(pinned = true) {
     return this.client.rest.put(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/pin`, { pinned });
   }
+
+  /** React as this application. A unicode emoji, or `custom:<id>` for one of this hub's. @param {string} emoji */
+  react(emoji) {
+    return this.client.rest.put(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/reactions/${enc(emoji)}`);
+  }
+
+  /** Take back this application's own reaction. @param {string} emoji */
+  unreact(emoji) {
+    return this.client.rest.delete(`/hubs/${enc(this.hubId)}/app/messages/${enc(this.id)}/reactions/${enc(emoji)}`);
+  }
 }
 
 /** A channel in an installed hub. Cheap to create: nothing is fetched until you ask. */
@@ -101,12 +111,12 @@ export class Channel {
   }
 
   /**
-   * The newest messages, oldest first. The API returns at most 100 and has no cursor yet.
-   * @param {{ limit?: number }} [options]
+   * Up to 100 messages, oldest first: the newest, or the page `before` / `after` a message id.
+   * @param {{ limit?: number, before?: string, after?: string }} [options]
    * @returns {Promise<Message[]>}
    */
-  async messages({ limit } = {}) {
-    const { messages } = await this.client.rest.get(`${this.#base}/messages`, { limit });
+  async messages({ limit, before, after } = {}) {
+    const { messages } = await this.client.rest.get(`${this.#base}/messages`, { limit, before, after });
     return messages.map((/** @type {any} */ m) => new Message(this.client, m, this.hubId));
   }
 
@@ -205,6 +215,17 @@ export class Hub {
   /** @param {string} profileId */
   member(profileId) {
     return new Member(this.client, this.key, profileId);
+  }
+
+  /** One member, with `role_ids`. @param {string} profileId @returns {Promise<any>} */
+  async fetchMember(profileId) {
+    return (await this.client.rest.get(`${this.#base}/members/${enc(profileId)}`)).member;
+  }
+
+  /** One message, by id. @param {string} messageId */
+  async fetchMessage(messageId) {
+    const { message } = await this.client.rest.get(`${this.#base}/messages/${enc(messageId)}`);
+    return new Message(this.client, message, this.key);
   }
 
   /** @returns {Promise<any[]>} */
