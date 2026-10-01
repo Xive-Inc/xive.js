@@ -44,7 +44,9 @@ Change the import and the token, then rename the things below. The rest of the b
 Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove`, `reply`,
 `send`, `edit`, `delete`, `react`, `pin`, `channel.messages.fetch({ limit, before, after })`,
 `bulkDelete`, `members.fetch`, `kick`, `ban`, `timeout`, `roles.add` / `remove`,
-`setNickname`, `EmbedBuilder`, `Colors`, `Collection`, and `SlashCommandBuilder`.
+`setNickname`, `EmbedBuilder`, `Colors`, `Collection`, `SlashCommandBuilder`, `ActionRowBuilder`,
+`ButtonBuilder`, `StringSelectMenuBuilder`, `ModalBuilder`, `TextInputBuilder`, collectors,
+`update()`, `deferUpdate()`, `showModal()` and `awaitModalSubmit()`.
 
 A few things work differently:
 
@@ -52,8 +54,8 @@ A few things work differently:
 - **Mentions are plain text** (`@username`, `@Role`, `#channel`). `${user}` and `${channel}`
   mention them. `<@id>`-style tokens are converted when the target is cached.
 - **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
-  buttons and menus (for now), and unbanning from a bot. Subcommands aren't supported; register
-  each one as its own command.
+  and unbanning from a bot. Subcommands aren't supported; register each one as its own command.
+  Only string select menus exist; user, role and channel selects don't yet.
 - **Not available yet:** voice, and bot presence and activity.
 
 ## Slash commands
@@ -92,6 +94,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
 - **Permissions:** `interaction.memberPermissions` is the member's permissions in that channel.
 - **Option getters:** `getString`, `getInteger`, `getBoolean`, `getUser`, `getMember`,
   `getChannel` and `getRole`.
+
+## Buttons, menus and forms
+
+Components use the same builders and JSON as discord.js:
+
+```js
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } from "xive.js";
+
+const row = new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId("yes").setLabel("Yes").setStyle(ButtonStyle.Success),
+  new ButtonBuilder().setCustomId("no").setLabel("No").setStyle(ButtonStyle.Danger),
+);
+const message = await channel.send({ content: "Vote!", components: [row] });
+
+const press = await message.awaitMessageComponent({ time: 60_000 });
+await press.update({ content: `You voted ${press.customId}`, components: [] });
+```
+
+- **Handling presses:** handle them in `interactionCreate` with `isButton()`,
+  `isStringSelectMenu()` and `isModalSubmit()`, or collect them per message with
+  `message.createMessageComponentCollector()`.
+- **Answering a press:** `update()` rewrites the message the control is on, and `deferUpdate()`
+  acknowledges it silently. `reply()`, `deferReply()` and `followUp()` work as they do for
+  commands.
+- **Forms:** `interaction.showModal(modal)` opens a form from a command or a press. The answers
+  arrive as a `ModalSubmitInteraction`; await it with `awaitModalSubmit()` and read
+  `fields.getTextInputValue(id)`.
 
 ## HTTP delivery instead of the gateway
 

@@ -249,9 +249,6 @@ export class Member {
  */
 export function toXiveMessage(client, hub, options) {
   const o = typeof options === "string" ? { content: options } : options instanceof Object ? options : { content: String(options) };
-  if (o.components?.length) {
-    throw new XiveUnsupportedError("Message components (buttons, select menus)", "send text or embeds for now");
-  }
   if (o.files?.length || o.attachments?.length) {
     throw new XiveUnsupportedError("File uploads from applications", "link the file, or put an image URL in an embed");
   }
@@ -262,6 +259,10 @@ export function toXiveMessage(client, hub, options) {
   const body = {};
   if (o.content !== undefined && o.content !== null) body.content = translateMentions(client, hub, String(o.content));
   if (o.embeds?.length) body.embeds = o.embeds.map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e));
+  // Rows of buttons / a select menu. `[]` on an edit removes them; absent leaves them as they are.
+  if (Array.isArray(o.components)) {
+    body.components = o.components.map((/** @type {any} */ r) => (typeof r?.toJSON === "function" ? r.toJSON() : r));
+  }
   const replyTo = o.reply?.messageReference ?? o.messageReference;
   if (replyTo) body.reply_to_id = typeof replyTo === "string" ? replyTo : replyTo.messageId ?? replyTo.id;
   return body;
@@ -308,7 +309,8 @@ export class Message {
       });
     }
     this.embeds = data.embeds ?? [];
-    this.components = [];
+    /** Action rows of buttons / select menus, as JSON. */
+    this.components = data.components ?? [];
     this.pinned = Boolean(data.pinned);
     this.system = false;
     this.tts = false;
@@ -395,6 +397,28 @@ export class Message {
       { name: options.name, origin_message_id: this.id }
     );
     return this.hub.channels.add({ id: thread.id, name: thread.name, kind: "thread" });
+  }
+
+  /**
+   * Collect presses and choices on this message's controls, discord.js-style:
+   * `collector.on("collect", (i) => …)`, `collector.on("end", (collected, reason) => …)`.
+   *
+   * @param {{ filter?: (i: any) => boolean, time?: number, max?: number, componentType?: number }} [options]
+   */
+  createMessageComponentCollector(options = {}) {
+    return this.client.collect(
+      (/** @type {any} */ i) => i.isMessageComponent?.() && i.message?.id === this.id
+        && (options.componentType === undefined || i.componentType === options.componentType),
+      options
+    );
+  }
+
+  /**
+   * The next press or choice on this message, or a rejection after `time` ms.
+   * @param {{ filter?: (i: any) => boolean, time?: number, componentType?: number }} [options]
+   */
+  awaitMessageComponent(options = {}) {
+    return this.client.awaitOne(this.createMessageComponentCollector({ ...options, max: 1 }));
   }
 
   async fetchReference() {

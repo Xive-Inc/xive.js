@@ -4,7 +4,8 @@ import { Collection } from "./collection.js";
 import { Events } from "./constants.js";
 import { toCommandJSON } from "./builders.js";
 import { ClientUser, Hub, Member, Message, MessageReaction, User } from "./structures.js";
-import { CommandInteraction } from "./interactions.js";
+import { createInteraction } from "./interactions.js";
+import { InteractionCollector, awaitOne } from "./collector.js";
 
 /**
  * A Xive bot.
@@ -81,6 +82,22 @@ export class Client extends EventEmitter {
     this.readyAt = new Date();
     this.emit(Events.ClientReady, this);
     return token;
+  }
+
+  /**
+   * Collect interactions matching `predicate` (and `options.filter`). What message collectors and
+   * `awaitModalSubmit()` are built on.
+   *
+   * @param {(i: any) => boolean} predicate
+   * @param {{ filter?: (i: any) => boolean, time?: number, max?: number }} [options]
+   */
+  collect(predicate, options) {
+    return new InteractionCollector(this, predicate, options);
+  }
+
+  /** The first interaction a collector gathers. @param {InteractionCollector} collector */
+  awaitOne(collector) {
+    return awaitOne(collector);
   }
 
   async destroy() {
@@ -215,7 +232,7 @@ export class Client extends EventEmitter {
         case "interaction.created": {
           const hub = await this.#hub(d.hub_id);
           if (!hub) return;
-          this.emit(Events.InteractionCreate, new CommandInteraction(this, hub, d));
+          this.emit(Events.InteractionCreate, createInteraction(this, hub, d));
           return;
         }
         case "role.assigned":

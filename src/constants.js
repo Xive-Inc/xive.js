@@ -72,6 +72,29 @@ export const ChannelKind = Object.freeze({
   RolePicker: "role_picker",
 });
 
+/** Component types — Discord's numbers, which is what Xive stores. */
+export const ComponentType = Object.freeze({
+  ActionRow: 1,
+  Button: 2,
+  StringSelect: 3,
+  TextInput: 4,
+});
+
+/** Button styles. `Link` opens `url` and is never sent to the bot. */
+export const ButtonStyle = Object.freeze({
+  Primary: 1,
+  Secondary: 2,
+  Success: 3,
+  Danger: 4,
+  Link: 5,
+});
+
+/** Text input styles in a form. */
+export const TextInputStyle = Object.freeze({
+  Short: 1,
+  Paragraph: 2,
+});
+
 /** Slash-command option types, as the API names them. */
 export const OptionType = Object.freeze({
   String: "string",

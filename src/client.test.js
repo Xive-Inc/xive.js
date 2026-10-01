@@ -149,7 +149,6 @@ test("what Xive does not do fails at the call, by name", async (t) => {
   await client.login("xive_as_test");
   const channel = client.channels.cache.get("chan-1");
   await assert.rejects(channel.send({ files: ["./a.png"] }), XiveUnsupportedError);
-  await assert.rejects(channel.send({ components: [{}] }), XiveUnsupportedError);
   const user = await client.users.fetch("user-9");
   await assert.rejects(user.send("hi"), XiveUnsupportedError);
 });
@@ -209,4 +208,72 @@ test("slash commands: interactionCreate, options, reply, private reply, defer �
     `PATCH original {"content":"Banned @trouble (spam)"}`,
     `POST followups {"content":"Logged.","ephemeral":true}`,
   ]);
+});
+
+test("components: buttons, a collector that updates, a select menu, and a form", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = await import("./index.js");
+
+  // ── A discord.js-style bot. ────────────────────────────────────────────────────────────────
+  let collected = null;
+  client.on(Events.MessageCreate, async (message) => {
+    if (message.content !== "!vote") return;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("yes").setLabel("Yes").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("no").setLabel("No").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setLabel("Docs").setStyle(ButtonStyle.Link).setURL("https://example.com"),
+    );
+    const sent = await message.channel.send({ content: "Vote!", components: [row] });
+    collected = sent.awaitMessageComponent({ time: 1000 }).then(async (i) => {
+      await i.update({ content: `You voted ${i.customId}`, components: [] });
+      return i.customId;
+    });
+  });
+  client.on(Events.InteractionCreate, async (i) => {
+    if (i.isStringSelectMenu()) await i.reply({ content: `Picked ${i.values.join(", ")}`, ephemeral: true });
+    if (i.isButton() && i.customId === "feedback") {
+      await i.showModal(new ModalBuilder().setCustomId("fb").setTitle("Feedback").addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("text").setLabel("Say it").setStyle(TextInputStyle.Paragraph)),
+      ));
+      const submit = await i.awaitModalSubmit({ time: 1000, filter: (s) => s.customId === "fb" });
+      await submit.reply({ content: `Thanks: ${submit.fields.getTextInputValue("text")}`, ephemeral: true });
+    }
+  });
+  // ──────────────────────────────────────────────────────────────────────────────────────────
+
+  const ix = (/** @type {string} */ id, /** @type {any} */ extra) => publish(client, "interaction.created", {
+    id, hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null,
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(), ...extra,
+  });
+
+  await publish(client, "message.created", fromMember("!vote"));
+  const send = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));
+  assert.deepEqual(send?.body.components, [{ type: 1, components: [
+    { type: 2, custom_id: "yes", label: "Yes", style: 3 },
+    { type: 2, custom_id: "no", label: "No", style: 4 },
+    { type: 2, label: "Docs", style: 5, url: "https://example.com" },
+  ] }]);
+
+  // A press on the sent message ("sent-1" in the fake API) resolves the collector, which updates.
+  await ix("ix-yes", { type: "component", custom_id: "yes", component_type: 2, values: [], message: { id: "sent-1", private: false } });
+  assert.equal(await collected, "yes");
+  assert.deepEqual(calls.filter((c) => c.path.endsWith("/ix-yes/callback")).at(-1)?.body,
+    { type: "update", content: "You voted yes", components: [] });
+
+  await ix("ix-sel", { type: "component", custom_id: "pick", component_type: 3, values: ["a", "b"], message: { id: "sent-1", private: false } });
+  assert.deepEqual(calls.filter((c) => c.path.endsWith("/ix-sel/callback")).at(-1)?.body,
+    { type: "reply", content: "Picked a, b", ephemeral: true });
+
+  // A button opens a form; the submission (a new interaction) is awaited and answered.
+  await ix("ix-fb", { type: "component", custom_id: "feedback", component_type: 2, values: [], message: { id: "sent-1", private: false } });
+  const modalCall = calls.filter((c) => c.path.endsWith("/ix-fb/callback")).at(-1);
+  assert.equal(modalCall?.body.type, "modal");
+  assert.equal(modalCall?.body.modal.components[0].components[0].custom_id, "text");
+  await ix("ix-sub", { type: "modal_submit", custom_id: "fb", fields: [{ custom_id: "text", value: "great bot" }], message: { id: "sent-1", private: false } });
+  assert.deepEqual(calls.filter((c) => c.path.endsWith("/ix-sub/callback")).at(-1)?.body,
+    { type: "reply", content: "Thanks: great bot", ephemeral: true });
 });

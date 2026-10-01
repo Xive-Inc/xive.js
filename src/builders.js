@@ -145,3 +145,92 @@ export function toCommandJSON(command) {
     })),
   };
 }
+
+/* ── Components: buttons, select menus, forms ──────────────────────────────────────────────────
+ *
+ * The same builders, method names and JSON as discord.js — Xive stores Discord's component shape —
+ * so a ported bot's component code runs as written. Every builder takes an optional plain object,
+ * and `toJSON()` is what is sent.
+ */
+
+/** @param {any} c */
+const componentJSON = (c) => (typeof c?.toJSON === "function" ? c.toJSON() : c);
+
+/** @param {string | { name?: string, id?: string } | undefined} emoji */
+const emojiJSON = (emoji) => (typeof emoji === "string" ? { name: emoji } : emoji);
+
+export class ButtonBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ type: 2, ...data }); }
+  /** @param {string} id */ setCustomId(id) { this.data.custom_id = id; return this; }
+  /** @param {string} label */ setLabel(label) { this.data.label = label; return this; }
+  /** @param {number} style one of ButtonStyle */ setStyle(style) { this.data.style = style; return this; }
+  /** @param {string | { name?: string, id?: string }} emoji */ setEmoji(emoji) { this.data.emoji = emojiJSON(emoji); return this; }
+  /** For ButtonStyle.Link. @param {string} url */ setURL(url) { this.data.url = url; return this; }
+  /** @param {boolean} [disabled] */ setDisabled(disabled = true) { this.data.disabled = disabled; return this; }
+  toJSON() { return { ...this.data }; }
+}
+
+export class StringSelectMenuOptionBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ ...data }); }
+  /** @param {string} label */ setLabel(label) { this.data.label = label; return this; }
+  /** @param {string} value */ setValue(value) { this.data.value = value; return this; }
+  /** @param {string} description */ setDescription(description) { this.data.description = description; return this; }
+  /** @param {string | { name?: string, id?: string }} emoji */ setEmoji(emoji) { this.data.emoji = emojiJSON(emoji); return this; }
+  /** @param {boolean} [isDefault] */ setDefault(isDefault = true) { this.data.default = isDefault; return this; }
+  toJSON() { return { ...this.data }; }
+}
+
+export class StringSelectMenuBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ type: 3, ...data, options: (data.options ?? []).map(componentJSON) }); }
+  /** @param {string} id */ setCustomId(id) { this.data.custom_id = id; return this; }
+  /** @param {string} text */ setPlaceholder(text) { this.data.placeholder = text; return this; }
+  /** @param {number} n */ setMinValues(n) { this.data.min_values = n; return this; }
+  /** @param {number} n */ setMaxValues(n) { this.data.max_values = n; return this; }
+  /** @param {boolean} [disabled] */ setDisabled(disabled = true) { this.data.disabled = disabled; return this; }
+  /** @param {...any} options builders or `{ label, value, description?, emoji?, default? }` */
+  addOptions(...options) { this.data.options.push(...options.flat().map(componentJSON)); return this; }
+  /** @param {...any} options */
+  setOptions(...options) { this.data.options = options.flat().map(componentJSON); return this; }
+  toJSON() { return { ...this.data, options: [...this.data.options] }; }
+}
+
+export class TextInputBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ type: 4, ...data }); }
+  /** @param {string} id */ setCustomId(id) { this.data.custom_id = id; return this; }
+  /** @param {string} label */ setLabel(label) { this.data.label = label; return this; }
+  /** @param {number} style one of TextInputStyle */ setStyle(style) { this.data.style = style; return this; }
+  /** @param {number} n */ setMinLength(n) { this.data.min_length = n; return this; }
+  /** @param {number} n */ setMaxLength(n) { this.data.max_length = n; return this; }
+  /** @param {boolean} [required] */ setRequired(required = true) { this.data.required = required; return this; }
+  /** @param {string} value */ setValue(value) { this.data.value = value; return this; }
+  /** @param {string} text */ setPlaceholder(text) { this.data.placeholder = text; return this; }
+  toJSON() { return { ...this.data }; }
+}
+
+/** A row of up to five buttons, or one select menu, or (in a form) one text input. */
+export class ActionRowBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = { type: 1, ...data }; this.components = (data.components ?? []).map(componentJSON); }
+  /** @param {...any} components */
+  addComponents(...components) { this.components.push(...components.flat().map(componentJSON)); return this; }
+  /** @param {...any} components */
+  setComponents(...components) { this.components = components.flat().map(componentJSON); return this; }
+  toJSON() { return { type: 1, components: [...this.components] }; }
+}
+
+/** A form, opened with `interaction.showModal(modal)`. */
+export class ModalBuilder {
+  /** @param {Record<string, any>} [data] */
+  constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ ...data }); this.components = (data.components ?? []).map(componentJSON); }
+  /** @param {string} id */ setCustomId(id) { this.data.custom_id = id; return this; }
+  /** @param {string} title */ setTitle(title) { this.data.title = title; return this; }
+  /** Rows, each holding one TextInputBuilder. @param {...any} rows */
+  addComponents(...rows) { this.components.push(...rows.flat().map(componentJSON)); return this; }
+  /** @param {...any} rows */
+  setComponents(...rows) { this.components = rows.flat().map(componentJSON); return this; }
+  toJSON() { return { ...this.data, components: [...this.components] }; }
+}
