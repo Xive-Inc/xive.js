@@ -101,7 +101,9 @@ A few things work differently:
   thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with
   components or embeds becomes the Text Display above them, since Xive refuses content beside
   components. Text across the message is capped at 4000 characters.
-- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
+- **One file per message.** `files: [path | Buffer | URL | new AttachmentBuilder(…)]` works on
+  `send()`, `reply()` and `followUp()`, up to 32 MB. Not on ephemeral replies or edits.
+- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, more than one file,
   polls and stickers.
 - **Presence shows only while the bot is connected to the gateway.** An HTTP-only bot can set
   it, but it never appears. There is no `Streaming` activity type, and presence can change once

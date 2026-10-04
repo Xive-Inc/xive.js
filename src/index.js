@@ -12,6 +12,7 @@ export {
 } from "./interactions.js";
 export { InteractionCollector } from "./collector.js";
 export { XiveAPIError, XiveUnsupportedError } from "./errors.js";
+export { AttachmentBuilder } from "./files.js";
 
 // The layer underneath, for raw events or REST without the object model.
 export { Connection } from "./connection.js";

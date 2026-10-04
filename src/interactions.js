@@ -1,6 +1,8 @@
 import { Collection } from "./collection.js";
 import { ComponentType } from "./constants.js";
 import { enc } from "./rest.js";
+import { pickFile, resolveFile } from "./files.js";
+import { XiveUnsupportedError } from "./errors.js";
 import { Member, Message, PermissionSet, Role, toXiveMessage } from "./structures.js";
 
 /**
@@ -64,7 +66,8 @@ export class BaseInteraction {
    */
   async reply(options) {
     const body = this.body(options);
-    const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "reply", ...body });
+    const file = await this.#file(options, body.ephemeral);
+    const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "reply", ...body }, file);
     this.replied = true;
     this.ephemeral = body.ephemeral;
     return result.message;
@@ -83,6 +86,7 @@ export class BaseInteraction {
 
   /** Send the answer after a defer, or change the one already sent. @param {any} options */
   async editReply(options) {
+    if (pickFile(options)) throw new XiveUnsupportedError("Files on editReply()", "use reply() or followUp() with the file");
     const { ephemeral: _ignored, ...body } = this.body(options);
     const result = await this.client.core.rest.patch(`${this.base}/original`, body);
     this.replied = true;
@@ -91,8 +95,18 @@ export class BaseInteraction {
 
   /** Another message after the first. `ephemeral` per message. @param {any} options */
   async followUp(options) {
-    const result = await this.client.core.rest.post(`${this.base}/followups`, this.body(options));
+    const body = this.body(options);
+    const file = await this.#file(options, body.ephemeral);
+    const result = await this.client.core.rest.post(`${this.base}/followups`, body, file);
     return result.message;
+  }
+
+  /** The one file in `options.files`, resolved — not on a private reply, which cannot carry one. */
+  async #file(/** @type {any} */ options, /** @type {boolean} */ ephemeral) {
+    const picked = pickFile(options);
+    if (!picked) return null;
+    if (ephemeral) throw new XiveUnsupportedError("Files on ephemeral replies", "send the file in a public reply or follow-up");
+    return resolveFile(picked);
   }
 }
 

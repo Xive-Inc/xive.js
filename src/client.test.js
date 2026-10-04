@@ -156,7 +156,7 @@ test("what Xive does not do fails at the call, by name", async (t) => {
   const client = new Client({ baseURL: "https://api.example.test" });
   await client.login("xive_as_test");
   const channel = client.channels.cache.get("chan-1");
-  await assert.rejects(channel.send({ files: ["./a.png"] }), XiveUnsupportedError);
+  await assert.rejects(channel.send({ files: ["./a.png", "./b.png"] }), XiveUnsupportedError);
   const user = await client.users.fetch("user-9");
   await assert.rejects(user.send("hi"), XiveUnsupportedError);
 });
@@ -486,5 +486,47 @@ test("presenceUpdate: old and new presence, cached on hub.presences", async (t) 
   await publish(client, "presence.updated", { hub_id: HUB.id, user_id: "u-1", status: "busy", activity: { custom: null, game: { name: "Rust" } } });
   assert.deepEqual(seen, [[null, "online", null], ["online", "busy", "Rust"]]);
   assert.equal(client.hubs.cache.get(HUB.id)?.presences.cache.get("u-1")?.status, "busy");
+  await client.destroy();
+});
+
+test("files: one file goes as multipart with payload_json; buffers, builders and paths all work", async (t) => {
+  fakeGateway(t);
+  /** @type {{ path: string, body: any, contentType: string | null }[]} */
+  const sent = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init) => {
+    const path = new URL(url).pathname;
+    const json = (/** @type {any} */ data, status = 200) => new Response(JSON.stringify({ success: true, ...data }), { status });
+    if (path === "/hubs/applications/@me") return json({ application: APP });
+    if (path === "/hubs/applications/@me/hubs") return json({ hubs: [HUB] });
+    if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
+    if (init.body instanceof FormData) {
+      const f = /** @type {any} */ (init.body.get("files[0]"));
+      sent.push({ path, body: JSON.parse(String(init.body.get("payload_json"))), contentType: init.headers["Content-Type"] ?? null });
+      sent.at(-1).file = { name: f.name, text: await f.text() };
+      return json({ message: { id: "m-1", channel_id: "chan-1", content: "" } }, 201);
+    }
+    return json({});
+  });
+  t.after(() => { globalThis.fetch = original; });
+
+  const { AttachmentBuilder } = await import("./index.js");
+  const { writeFile, mkdtemp } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const dir = await mkdtemp(join(tmpdir(), "xivejs-"));
+  const path = join(dir, "log.txt");
+  await writeFile(path, "from disk");
+
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const channel = client.channels.cache.get("chan-1") ?? await client.channels.fetch("chan-1");
+  await channel.send({ content: "see file", files: [new AttachmentBuilder(Buffer.from("hello"), { name: "a.txt" })] });
+  await channel.send({ files: [path] });
+
+  assert.deepEqual(sent.map((s) => [s.path, s.body.content ?? null, s.file.name, s.file.text, s.contentType]), [
+    ["/hubs/hub-1/app/channels/chan-1/messages", "see file", "a.txt", "hello", null],
+    ["/hubs/hub-1/app/channels/chan-1/messages", null, "log.txt", "from disk", null],
+  ]);
   await client.destroy();
 });

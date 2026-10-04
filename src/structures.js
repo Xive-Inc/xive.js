@@ -2,6 +2,7 @@ import { Collection } from "./collection.js";
 import { ActivityType, ChannelKind, Permissions } from "./constants.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
+import { pickFile, resolveFile } from "./files.js";
 
 /** Where the app is served — the host a channel link must name for the app to recognise it. */
 const APP_ORIGIN = "https://hub.thexive.com";
@@ -338,8 +339,10 @@ export class Member {
  */
 export function toXiveMessage(client, hub, options) {
   const o = typeof options === "string" ? { content: options } : options instanceof Object ? options : { content: String(options) };
-  if (o.files?.length || o.attachments?.length) {
-    throw new XiveUnsupportedError("File uploads from applications", "link the file, or show an image URL in an embed or a Media Gallery");
+  // One file per message, sent as multipart by the caller (files.js); `attachments` (keeping
+  // files on an edit) has no meaning here — an edit cannot change the file.
+  if (o.files?.length > 1) {
+    throw new XiveUnsupportedError("More than one file per message", "send one file per message");
   }
   if (o.poll) throw new XiveUnsupportedError("Polls");
   if (o.stickers?.length) throw new XiveUnsupportedError("Stickers from applications");
@@ -523,6 +526,7 @@ export class Message {
 
   /** @param {any} options */
   async edit(options) {
+    if (pickFile(options)) throw new XiveUnsupportedError("Changing a message's file", "send a new message with the file");
     const body = toXiveMessage(this.client, this.hub, options);
     const { message } = await this.client.core.rest.patch(this.#path, body);
     if (message?.content !== undefined) this.content = message.content;
@@ -702,8 +706,10 @@ export class Channel {
   /** @param {any} options */
   async send(options) {
     const body = toXiveMessage(this.client, this.hub, options);
+    const picked = pickFile(options);
+    const file = picked ? await resolveFile(picked) : null;
     const { message } = await this.client.core.rest.post(
-      `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body
+      `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body, file
     );
     return this.messages.add({
       created_at: new Date().toISOString(), reply_to_id: body.reply_to_id ?? null, components: body.components, ...message,
