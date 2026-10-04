@@ -8,6 +8,7 @@
   <p>
     <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/v/xive.js.svg?maxAge=3600" alt="npm version" /></a>
     <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/dt/xive.js.svg?maxAge=3600" alt="npm downloads" /></a>
+    <a href="https://github.com/Xive-Inc/xive.js/actions/workflows/test.yml"><img src="https://github.com/Xive-Inc/xive.js/actions/workflows/test.yml/badge.svg" alt="Tests" /></a>
     <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node 18+" />
     <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" />
   </p>

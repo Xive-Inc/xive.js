@@ -2,6 +2,22 @@
   "name": "xive.js",
   "version": "0.1.0",
   "description": "Build bots for Xive hubs.",
+  "keywords": [
+    "xive",
+    "bot",
+    "api",
+    "gateway",
+    "slash-commands",
+    "discord.js"
+  ],
+  "homepage": "https://github.com/Xive-Inc/xive.js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xive-Inc/xive.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xive-Inc/xive.js/issues"
+  },
   "type": "module",
   "main": "src/index.js",
   "exports": {
