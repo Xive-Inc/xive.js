@@ -82,7 +82,8 @@ Change the import and the token, then rename the things below. The rest of the b
 | `new REST().put(Routes.applicationCommands(id), { body })` | `client.application.commands.set(commands)` |
 | `setPresence({ activities: [a], status: "idle" })` | `setPresence({ activity: a, status: "away" })`. One activity; statuses are `online`, `away`, `busy`, `invisible` (`idle` → `away`, `dnd` → `busy`). Returns a Promise |
 
-Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove`, `reply`,
+Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove`,
+`messagePollVoteAdd` / `Remove`, `poll` on `send`, `message.poll`, `reply`,
 `send`, `edit`, `delete`, `react`, `pin`, `channel.messages.fetch({ limit, before, after })`,
 `bulkDelete`, `members.fetch`, `kick`, `ban`, `timeout`, `roles.add` / `remove`,
 `setNickname`, `EmbedBuilder`, `Colors`, `Collection`, `SlashCommandBuilder`, `ActionRowBuilder`,
@@ -103,8 +104,8 @@ A few things work differently:
   components. Text across the message is capped at 4000 characters.
 - **One file per message.** `files: [path | Buffer | URL | new AttachmentBuilder(…)]` works on
   `send()`, `reply()` and `followUp()`, up to 32 MB. Not on ephemeral replies or edits.
-- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, more than one file,
-  polls and stickers.
+- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, more than one file
+  and stickers.
 - **Presence shows only while the bot is connected to the gateway.** An HTTP-only bot can set
   it, but it never appears. There is no `Streaming` activity type, and presence can change once
   every 4 seconds (the client waits out the limit for you).
@@ -203,6 +204,37 @@ await press.update({ content: `You voted ${press.customId}`, components: [] });
 - **Forms:** `interaction.showModal(modal)` opens a form from a command or a press. The answers
   arrive as a `ModalSubmitInteraction`; await it with `awaitModalSubmit()` and read
   `fields.getTextInputValue(id)`.
+
+## Polls
+
+Polls take discord.js's `PollData`. `duration` is in hours (1 to 168, default 24):
+
+```js
+const message = await channel.send({
+  poll: {
+    question: { text: "Best map?" },
+    answers: [{ text: "Dust", emoji: "🏜️" }, { text: "Inferno" }],
+    duration: 24,
+    allowMultiselect: false,
+  },
+});
+
+client.on(Events.MessagePollVoteAdd, (answer, userId) => {
+  console.log(`${userId} voted for ${answer.text}`);
+});
+
+const voters = await message.poll.answers.get(1).fetchVoters({ limit: 100 });
+await message.poll.end(); // only on the bot's own polls
+```
+
+- **The rules:** a question of up to 300 characters, and 1 to 10 answers of up to 55 characters.
+  An answer's emoji is a unicode emoji, or `{ id }` for one of the hub's own emoji.
+- **A poll is the whole message.** Content, files, embeds and components can't go with it.
+- **Reading one:** `message.poll` has `question.text`, `answers` (keyed by answer id, 1 to N in
+  the order given), `allowMultiselect`, `expiresAt`, `resultsFinalized` and `totalVoters`. Each
+  answer has `id`, `text`, `emoji` and `voteCount`.
+- **When it ends**, early or by expiring, you get `messageUpdate` with `poll.resultsFinalized` set.
+- **Permission:** sending one needs `Permissions.SendPolls` in the channel.
 
 ## HTTP delivery instead of the gateway
 

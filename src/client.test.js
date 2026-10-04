@@ -32,6 +32,8 @@ function fakeApi(t) {
     if (path === "/hubs/hub-1/app/channels/chan-1/messages" && method === "POST") {
       return json({ message: { id: "sent-1", channel_id: "chan-1", content: body.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
     }
+    if (path.endsWith("/voters")) return json({ voters: [{ profile_id: "user-7", username: "kai", display_name: "Kai", avatar_url: null }] });
+    if (path.endsWith("/poll/end")) return json({ poll: { ended: true, ended_at: "2026-10-04T13:00:00Z" } });
     if (path.startsWith("/hubs/hub-1/app/members/")) {
       return json({ member: { profile_id: path.split("/")[5], username: "sam", display_name: "Sam", nickname: null, avatar_url: null, joined_at: "2026-09-01T00:00:00Z", role_ids: ["role-mod"], timed_out_until: null } });
     }
@@ -559,4 +561,82 @@ test("autocomplete: setAutocomplete registers it; getFocused + respond answer it
   const cb = calls.find((c) => c.path === "/hubs/hub-1/app/interactions/ac-1/callback");
   assert.deepEqual(cb?.body, { type: "autocomplete", choices: [{ name: "apple", value: "apple" }, { name: "apricot", value: "apricot" }] });
   await client.destroy();
+});
+
+test("polls: PollData out, message.poll in, vote events, end() and fetchVoters()", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const channel = client.channels.cache.get("chan-1");
+
+  // discord.js's PollData → the API's poll object.
+  await channel.send({
+    poll: {
+      question: { text: "Best map?" },
+      answers: [{ text: "Dust", emoji: "🏜️" }, { text: "Inferno", emoji: { id: "emoji-1" } }, { text: "Nuke" }],
+      duration: 48,
+      allowMultiselect: true,
+    },
+  });
+  const post = calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).at(-1);
+  assert.deepEqual(post?.body, {
+    poll: {
+      question: "Best map?",
+      answers: [{ text: "Dust", emoji: "🏜️" }, { text: "Inferno", emoji: "custom:emoji-1" }, { text: "Nuke" }],
+      duration_hours: 48,
+      allow_multiselect: true,
+    },
+  });
+
+  // A message with a poll parses into Poll / PollAnswer.
+  const data = {
+    ...fromMember(""), content: null,
+    poll: {
+      question: "Best map?",
+      answers: [
+        { answer_id: 1, text: "Dust", emoji: "🏜️", count: 3, voted: false },
+        { answer_id: 2, text: "Inferno", emoji: "custom:emoji-1", count: 1, voted: false },
+      ],
+      allow_multiselect: false, expires_at: "2026-10-05T21:00:00Z", ended: false, ended_at: null, total_voters: 4,
+    },
+  };
+  let created;
+  client.on(Events.MessageCreate, (m) => { created = m; });
+  await publish(client, "message.created", data);
+  const poll = created.poll;
+  assert.equal(poll.question.text, "Best map?");
+  assert.equal(poll.answers.size, 2);
+  assert.equal(poll.answers.get(1).text, "Dust");
+  assert.equal(poll.answers.get(1).voteCount, 3);
+  assert.deepEqual({ ...poll.answers.get(2).emoji }, { id: "emoji-1", name: null, identifier: "custom:emoji-1" });
+  assert.equal(poll.allowMultiselect, false);
+  assert.equal(poll.expiresAt.toISOString(), "2026-10-05T21:00:00.000Z");
+  assert.equal(poll.resultsFinalized, false);
+  assert.equal(poll.totalVoters, 4);
+
+  // Vote events: (pollAnswer, userId); a cached poll's count follows.
+  const votes = [];
+  client.on(Events.MessagePollVoteAdd, (answer, userId) => votes.push(["add", answer.id, answer.voteCount, userId]));
+  client.on(Events.MessagePollVoteRemove, (answer, userId) => votes.push(["remove", answer.id, answer.voteCount, userId]));
+  const vote = { message_id: data.id, hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null, user: { type: "member", profile_id: "user-7" } };
+  await publish(client, "message.poll_vote_added", { ...vote, answer_id: 1 });
+  await publish(client, "message.poll_vote_removed", { ...vote, answer_id: 2 });
+  await publish(client, "message.poll_vote_added", { ...vote, message_id: "uncached", answer_id: 3 });
+  assert.deepEqual(votes, [["add", 1, 4, "user-7"], ["remove", 2, 0, "user-7"], ["add", 3, null, "user-7"]]);
+
+  // message.updated carries the ended poll.
+  let updated;
+  client.on(Events.MessageUpdate, (_old, fresh) => { updated = fresh; });
+  await publish(client, "message.updated", { ...data, poll: { ...data.poll, ended: true, ended_at: "2026-10-04T12:00:00Z" } });
+  assert.equal(updated.poll.resultsFinalized, true);
+  assert.equal(updated.poll.endedAt.toISOString(), "2026-10-04T12:00:00.000Z");
+
+  // end() and fetchVoters() hit the contract routes.
+  await poll.end();
+  assert.ok(calls.find((c) => c.method === "POST" && c.path === `/hubs/hub-1/app/messages/${data.id}/poll/end`));
+  assert.equal(poll.resultsFinalized, true);
+  const voters = await poll.answers.get(1).fetchVoters({ limit: 10 });
+  assert.ok(calls.find((c) => c.method === "GET" && c.path === `/hubs/hub-1/app/messages/${data.id}/poll/answers/1/voters`));
+  assert.equal(voters.get("user-7")?.displayName, "Kai");
 });

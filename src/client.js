@@ -3,7 +3,7 @@ import { Connection } from "./connection.js";
 import { Collection } from "./collection.js";
 import { Events } from "./constants.js";
 import { toCommandJSON } from "./builders.js";
-import { ClientUser, Hub, Member, Message, MessageReaction, Presence, User } from "./structures.js";
+import { ClientUser, Hub, Member, Message, MessageReaction, Poll, PollAnswer, Presence, User } from "./structures.js";
 import { createInteraction } from "./interactions.js";
 import { InteractionCollector, awaitOne } from "./collector.js";
 
@@ -200,6 +200,25 @@ export class Client extends EventEmitter {
             ? this.users.add({ id: u.profile_id, username: u.username ?? null, name: u.name ?? null })
             : this.users.add({ id: u.application_id, username: u.name, name: u.name, bot: true });
           this.emit(event.type === "message.reaction_added" ? Events.MessageReactionAdd : Events.MessageReactionRemove, reaction, user);
+          return;
+        }
+        case "message.poll_vote_added":
+        case "message.poll_vote_removed": {
+          // (pollAnswer, userId), as discord.js emits. A cached poll's count follows the vote.
+          const channel = await this.#channel(d);
+          if (!channel) return;
+          const added = event.type === "message.poll_vote_added";
+          const message = channel.messages.cache.get(d.message_id) ?? new Message(this, channel, { id: d.message_id });
+          message.poll ??= new Poll(this, message, null);
+          const id = Number(d.answer_id);
+          let answer = message.poll.answers.get(id);
+          if (!answer) {
+            answer = new PollAnswer(this, message.poll, { answer_id: id });
+            message.poll.answers.set(id, answer);
+          }
+          if (answer.voteCount !== null) answer.voteCount = Math.max(0, answer.voteCount + (added ? 1 : -1));
+          const userId = d.user?.profile_id ?? d.user?.application_id ?? null;
+          this.emit(added ? Events.MessagePollVoteAdd : Events.MessagePollVoteRemove, answer, userId);
           return;
         }
         case "presence.updated": {

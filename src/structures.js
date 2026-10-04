@@ -344,7 +344,6 @@ export function toXiveMessage(client, hub, options) {
   if (o.files?.length > 1) {
     throw new XiveUnsupportedError("More than one file per message", "send one file per message");
   }
-  if (o.poll) throw new XiveUnsupportedError("Polls");
   if (o.stickers?.length) throw new XiveUnsupportedError("Stickers from applications");
 
   /** @type {Record<string, unknown>} */
@@ -371,9 +370,44 @@ export function toXiveMessage(client, hub, options) {
     if (body.content.trim() !== "") body.components = [{ type: 10, content: body.content }, ...components];
     delete body.content;
   }
+  if (o.poll) body.poll = toXivePoll(o.poll);
   const replyTo = o.reply?.messageReference ?? o.messageReference;
   if (replyTo) body.reply_to_id = typeof replyTo === "string" ? replyTo : replyTo.messageId ?? replyTo.id;
   return body;
+}
+
+/**
+ * discord.js's PollData — `{ question: { text }, answers: [{ text, emoji }], duration, allowMultiselect }`
+ * with `duration` in hours — → the API's `{ question, answers, duration_hours, allow_multiselect }`.
+ * An answer's emoji is a unicode string, or `{ name }` / `{ id }` (a hub emoji, sent as `custom:<id>`).
+ * The API's own snake_case shape is passed through as well.
+ *
+ * @param {any} p
+ */
+export function toXivePoll(p) {
+  const question = typeof p.question === "string" ? p.question : p.question?.text;
+  /** @type {Record<string, unknown>} */
+  const out = {
+    question: String(question ?? ""),
+    answers: (p.answers ?? []).map((/** @type {any} */ a) => {
+      const text = typeof a === "string" ? a : a?.text ?? a?.poll_media?.text;
+      const emoji = pollEmoji(typeof a === "string" ? null : a?.emoji ?? a?.poll_media?.emoji);
+      return emoji ? { text: String(text ?? ""), emoji } : { text: String(text ?? "") };
+    }),
+  };
+  const hours = p.duration ?? p.duration_hours;
+  if (hours !== undefined && hours !== null) out.duration_hours = Number(hours);
+  const multi = p.allowMultiselect ?? p.allow_multiselect;
+  if (multi !== undefined && multi !== null) out.allow_multiselect = Boolean(multi);
+  return out;
+}
+
+/** @param {any} e a unicode string, `custom:<id>`, or `{ id }` / `{ name }` @returns {string | null} */
+function pollEmoji(e) {
+  if (!e) return null;
+  if (typeof e === "string") return e;
+  if (e.id) return `custom:${e.id}`;
+  return e.name ? String(e.name) : null;
 }
 
 /**
@@ -466,6 +500,8 @@ export class Message {
     /** Action rows of buttons / select menus, as JSON. */
     this.components = data.components ?? [];
     this.pinned = Boolean(data.pinned);
+    /** The poll this message carries, or null. @type {Poll | null} */
+    this.poll = data.poll ? new Poll(client, this, data.poll) : null;
     this.system = false;
     this.tts = false;
 
@@ -515,6 +551,7 @@ export class Message {
   async fetch() {
     const fresh = await this.channel.messages.fetch(this.id);
     Object.assign(this, fresh);
+    if (this.poll) this.poll.message = this;
     return this;
   }
 
@@ -608,6 +645,107 @@ export class MessageReaction {
     return this;
   }
   fetch() { return Promise.resolve(this); }
+}
+
+/**
+ * A message's poll, discord.js-shaped. `answers` is keyed by answer id (1…N, in the order they
+ * were given). Counts are as of the last read — `message.fetch()` for fresh ones; the
+ * `messagePollVoteAdd` / `messagePollVoteRemove` events keep a cached poll's counts current.
+ */
+export class Poll {
+  /** @param {Client} client @param {Message} message @param {any} data the API's poll JSON (possibly partial) */
+  constructor(client, message, data) {
+    this.client = client;
+    this.message = message;
+    this.partial = data?.question === undefined;
+    this.question = { text: data?.question ?? null };
+    /** @type {Collection<number, PollAnswer>} */
+    this.answers = new Collection();
+    for (const a of data?.answers ?? []) {
+      const answer = new PollAnswer(client, this, a);
+      this.answers.set(answer.id, answer);
+    }
+    this._patch(data ?? {});
+  }
+
+  /** @param {any} data */
+  _patch(data) {
+    if ("allow_multiselect" in data) this.allowMultiselect = Boolean(data.allow_multiselect);
+    else this.allowMultiselect ??= false;
+    if ("expires_at" in data) this.expiresAt = data.expires_at ? new Date(data.expires_at) : null;
+    else this.expiresAt ??= null;
+    if ("ended_at" in data) this.endedAt = data.ended_at ? new Date(data.ended_at) : null;
+    else this.endedAt ??= null;
+    // True once the poll has ended (early, or by expiring) — discord.js's name for it.
+    if ("ended" in data) this.resultsFinalized = Boolean(data.ended);
+    else this.resultsFinalized ??= false;
+    // Distinct people who voted.
+    if ("total_voters" in data) this.totalVoters = Number(data.total_voters);
+    else this.totalVoters ??= null;
+    for (const a of data.answers ?? []) {
+      const known = this.answers.get(Number(a.answer_id));
+      if (known) known._patch(a);
+      else this.answers.set(Number(a.answer_id), new PollAnswer(this.client, this, a));
+    }
+  }
+
+  get expiresTimestamp() { return this.expiresAt?.getTime() ?? null; }
+  /** Ended, or past its expiry. */
+  get ended() { return this.resultsFinalized || (this.expiresAt !== null && this.expiresAt.getTime() <= Date.now()); }
+
+  /** End the poll now. Only on the application's own messages. */
+  async end() {
+    const m = this.message;
+    const { poll } = await this.client.core.rest.post(`/hubs/${enc(m.hubId)}/app/messages/${enc(m.id)}/poll/end`);
+    if (poll) this._patch(poll);
+    else this.resultsFinalized = true;
+    return m;
+  }
+}
+
+export class PollAnswer {
+  /** @param {Client} client @param {Poll} poll @param {any} data */
+  constructor(client, poll, data) {
+    this.client = client;
+    this.poll = poll;
+    this.id = Number(data.answer_id);
+    this.text = data.text ?? null;
+    /** `{ id, name, identifier }` — `id` for a hub emoji, `name` for a unicode one — or null. */
+    this.emoji = null;
+    this.voteCount = null;
+    this._patch(data);
+  }
+
+  /** @param {any} data */
+  _patch(data) {
+    if ("text" in data) this.text = data.text;
+    if ("emoji" in data) {
+      const e = data.emoji;
+      const custom = typeof e === "string" && e.startsWith("custom:") ? e.slice(7) : null;
+      this.emoji = e ? { id: custom, name: custom ? null : e, identifier: e } : null;
+    }
+    if ("count" in data) this.voteCount = Number(data.count);
+  }
+
+  get partial() { return this.text === null; }
+
+  /**
+   * Who voted for this answer.
+   * @param {{ limit?: number }} [options] up to 100
+   * @returns {Promise<Collection<string, User>>}
+   */
+  async fetchVoters({ limit } = {}) {
+    const m = this.poll.message;
+    const { voters } = await this.client.core.rest.get(
+      `/hubs/${enc(m.hubId)}/app/messages/${enc(m.id)}/poll/answers/${this.id}/voters`, { limit }
+    );
+    const out = new Collection();
+    for (const v of voters ?? []) {
+      const user = this.client.users.add({ id: v.profile_id, username: v.username, name: v.display_name, avatar_url: v.avatar_url });
+      out.set(user.id, user);
+    }
+    return out;
+  }
 }
 
 /* ── Channels ───────────────────────────────────────────────────────────────────────────────── */
