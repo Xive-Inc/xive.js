@@ -2,7 +2,7 @@ import { Collection } from "./collection.js";
 import { ActivityType, ChannelKind, Permissions } from "./constants.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
-import { pickFile, resolveFile } from "./files.js";
+import { attachmentEntries, checkFileCount, pickFiles, resolveFiles } from "./files.js";
 
 /** Where the app is served — the host a channel link must name for the app to recognise it. */
 const APP_ORIGIN = "https://hub.thexive.com";
@@ -70,8 +70,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /*
  * The server rewrites `<user:id>`, `<role:id>` and `<channel:id>` before storing — into `@username`,
- * `@Role Name`, and the channel's link (`#name` for a thread) — and a message's JSON carries no
- * list of who it mentioned. So a received message's mentions are read back out of that text,
+ * `@Role Name`, and the channel's link (`#name` for a thread). A message's JSON carries the list of
+ * what it mentioned as `mentions` (see serverMentions); one from an older server that does not is
+ * the fallback below — its mentions are read back out of that text,
  * matched the way the server matched it, against what this process has cached. A token still in
  * the text is one the server could NOT resolve (not a member, another hub's role…), so it is not a
  * mention and is not read as one.
@@ -144,6 +145,31 @@ function readMentions(client, hub, content) {
     if (ch.url ? content.includes(ch.url) && hasLink(content, ch.url) : ch.name !== ch.id && hasLabel(content, `#${ch.name}`)) {
       channels.set(ch.id, ch);
     }
+  }
+  return { users, roles, channels };
+}
+
+/**
+ * The server's `mentions` list as collections: users cached under the names it gives, roles and
+ * channels from the hub's caches, or a stub from `{ id, name }` for one this process has not seen.
+ * @param {Client} client @param {any} hub
+ * @param {{ users?: any[], roles?: any[], channels?: any[] }} listed
+ */
+function serverMentions(client, hub, listed) {
+  /** @type {Collection<string, User>} */ const users = new Collection();
+  /** @type {Collection<string, Role>} */ const roles = new Collection();
+  /** @type {Collection<string, Channel>} */ const channels = new Collection();
+  for (const u of listed.users ?? []) {
+    if (!u?.id) continue;
+    const user = client.users.add({ id: u.id, username: u.username, name: u.name });
+    if (u.name && user.globalName !== u.name) user.globalName = u.name;
+    users.set(user.id, user);
+  }
+  for (const r of listed.roles ?? []) {
+    if (r?.id) roles.set(r.id, hub?.roles?.cache?.get(r.id) ?? new Role(client, hub, { id: r.id, name: r.name }));
+  }
+  for (const c of listed.channels ?? []) {
+    if (c?.id) channels.set(c.id, hub?.channels?.cache?.get(c.id) ?? new Channel(client, hub, { id: c.id, name: c.name }));
   }
   return { users, roles, channels };
 }
@@ -408,11 +434,9 @@ export class Member {
  */
 export function toXiveMessage(client, hub, options) {
   const o = typeof options === "string" ? { content: options } : options instanceof Object ? options : { content: String(options) };
-  // One file per message, sent as multipart by the caller (files.js); `attachments` (keeping
-  // files on an edit) has no meaning here — an edit cannot change the file.
-  if (o.files?.length > 1) {
-    throw new XiveUnsupportedError("More than one file per message", "send one file per message");
-  }
+  // Up to 10 files per message, sent as multipart by the caller (files.js); `attachments` (keeping
+  // files on an edit) has no meaning here — an edit cannot change the files.
+  if (o.files?.length) checkFileCount(o.files.length);
   if (o.stickers?.length) throw new XiveUnsupportedError("Stickers from applications");
 
   /** @type {Record<string, unknown>} */
@@ -558,13 +582,11 @@ export class Message {
     this.reference = data.reply_to_id
       ? { messageId: data.reply_to_id, channelId: channel.id, hubId: channel.hub.id }
       : null;
-    this.attachments = new Collection();
-    if (data.attachment?.url) {
-      this.attachments.set(data.attachment.url, {
-        id: data.attachment.url, url: data.attachment.url, proxyURL: data.attachment.url,
-        contentType: data.attachment.type ?? null, name: data.attachment.url.split("/").pop(),
-      });
-    }
+    /**
+     * The message's files, in order — keyed by attachment id (by position, as a string, when the
+     * id is null). @type {Collection<string, import("./files.js").Attachment>}
+     */
+    this.attachments = new Collection(attachmentEntries(data));
     this.embeds = data.embeds ?? [];
     /** Action rows of buttons / select menus, as JSON. */
     this.components = data.components ?? [];
@@ -590,15 +612,20 @@ export class Message {
     }
 
     const content = this.content ?? "";
-    const everyone = /(^|\s)@(everyone|here)\b/.test(content);
-    const { users, roles, channels } = readMentions(client, channel.hub, content);
+    // The server's own list when the message carries one (it always does from a current server);
+    // read back out of the text, against the caches, only when it does not.
+    const listed = data.mentions && typeof data.mentions === "object" ? data.mentions : null;
+    const everyone = listed ? Boolean(listed.everyone) : /(^|\s)@(everyone|here)\b/.test(content);
+    const { users, roles, channels } = listed
+      ? serverMentions(client, channel.hub, listed)
+      : readMentions(client, channel.hub, content);
     this.mentions = {
       everyone,
-      /** The members mentioned by `@username`, among the users this process has cached. */
+      /** The users mentioned — the server's list, or `@username` among the users this process has cached. */
       users,
-      /** The roles mentioned by `@Role Name`, from the hub's role cache. */
+      /** The roles mentioned — the server's list, or `@Role Name` from the hub's role cache. */
       roles,
-      /** The channels mentioned by link (or `#name` for a thread), from the hub's channel cache. */
+      /** The channels mentioned — the server's list, or links (`#name` for a thread) from the hub's channel cache. */
       channels,
       /**
        * discord.js's `mentions.has()`: true for @everyone (unless `ignoreEveryone`), for anything
@@ -623,7 +650,8 @@ export class Message {
                 : target instanceof Role ? [roles, target]
                   : target instanceof Channel ? [channels, target] : [null, null];
             if (list?.has(target.id)) return true;
-            if (list && mentionsInText(content, target)) {
+            // The server's list is the whole answer; the text is only read when there is none.
+            if (list && !listed && mentionsInText(content, target)) {
               list.set(target.id, /** @type {any} */ (value));
               return true;
             }
@@ -661,7 +689,7 @@ export class Message {
 
   /** @param {any} options */
   async edit(options) {
-    if (pickFile(options)) throw new XiveUnsupportedError("Changing a message's file", "send a new message with the file");
+    if (pickFiles(options).length) throw new XiveUnsupportedError("Changing a message's file", "send a new message with the file");
     const body = toXiveMessage(this.client, this.hub, options);
     const { message } = await this.client.core.rest.patch(this.#path, body);
     if (message?.content !== undefined) this.content = message.content;
@@ -942,10 +970,9 @@ export class Channel {
   /** @param {any} options */
   async send(options) {
     const body = toXiveMessage(this.client, this.hub, options);
-    const picked = pickFile(options);
-    const file = picked ? await resolveFile(picked) : null;
+    const files = await resolveFiles(options);
     const { message } = await this.client.core.rest.post(
-      `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body, file
+      `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body, files
     );
     return this.messages.add({
       created_at: new Date().toISOString(), reply_to_id: body.reply_to_id ?? null, components: body.components, ...message,

@@ -121,9 +121,8 @@ A few things work differently:
   `${role}` and `${channel}` produce them. The server stores them as `@username`, `@Role` and the
   channel's link (a #channel pill for readers who can see it), so that is what received messages
   contain. Discord's `<@id>`, `<@&id>` and `<#id>` are converted for you. `message.mentions`
-  reads those stored forms back against what the client has cached — members and users it has
-  seen, the hub's roles and channels — so a mention of someone it has never seen is not in
-  `mentions.users`; `mentions.has(user)` still finds it by name.
+  comes from the server's own list of who and what the message mentioned, so it is complete
+  even for users the client has never seen (they are added to `client.users`).
 - **A private answer is not a message.** `followUp()` and `editReply()` resolve to a `Message`,
   as in discord.js, but an ephemeral one resolves to `{ id }`. `reply()` resolves to the API's
   JSON for the message unless you pass `fetchReply: true`.
@@ -132,9 +131,11 @@ A few things work differently:
   thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with
   components or embeds becomes the Text Display above them, since Xive refuses content beside
   components. Text across the message is capped at 4000 characters.
-- **One file per message.** `files: [path | Buffer | URL | new AttachmentBuilder(…)]` works on
-  `send()`, `reply()` and `followUp()`, up to 32 MB. Not on ephemeral replies or edits.
-- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, more than one file
+- **Up to 10 files per message.** `files: [path | Buffer | URL | new AttachmentBuilder(…)]` works on
+  `send()`, `reply()` and `followUp()`, up to 32 MB each, sent in order. Not on ephemeral replies
+  or edits. A received message's files are `message.attachments`, a Collection of `Attachment`
+  (`id`, `url`, `contentType`, `name`, `size`) keyed by id.
+- **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, more than 10 files
   and stickers.
 - **Presence shows only while the bot is connected to the gateway.** An HTTP-only bot can set
   it, but it never appears. There is no `Streaming` activity type, and presence can change once

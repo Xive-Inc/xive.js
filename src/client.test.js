@@ -196,7 +196,7 @@ test("what Xive does not do fails at the call, by name", async (t) => {
   const client = new Client({ baseURL: "https://api.example.test" });
   await client.login("xive_as_test");
   const channel = client.channels.cache.get("chan-1");
-  await assert.rejects(channel.send({ files: ["./a.png", "./b.png"] }), XiveUnsupportedError);
+  await assert.rejects(channel.send({ files: Array.from({ length: 11 }, () => Buffer.from("x")) }), XiveUnsupportedError);
   const user = await client.users.fetch("user-9");
   await assert.rejects(user.send("hi"), XiveUnsupportedError);
 });
@@ -571,6 +571,103 @@ test("files: one file goes as multipart with payload_json; buffers, builders and
   await client.destroy();
 });
 
+test("files: up to 10 go as files[0]…files[n-1] in order; 11 are refused before anything is sent", async (t) => {
+  fakeGateway(t);
+  /** @type {{ path: string, body: any, keys: string[], files: { name: string, text: string }[] }[]} */
+  const sent = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init) => {
+    const path = new URL(url).pathname;
+    const json = (/** @type {any} */ data, status = 200) => new Response(JSON.stringify({ success: true, ...data }), { status });
+    if (path === "/hubs/applications/@me") return json({ application: APP });
+    if (path === "/hubs/applications/@me/hubs") return json({ hubs: [HUB] });
+    if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
+    if (init.body instanceof FormData) {
+      const keys = [...init.body.keys()];
+      const files = await Promise.all(keys.filter((k) => k !== "payload_json").map(async (k) => {
+        const f = /** @type {any} */ (init.body.get(k));
+        return { name: f.name, text: await f.text() };
+      }));
+      sent.push({ path, body: JSON.parse(String(init.body.get("payload_json"))), keys, files });
+      return json({
+        message: {
+          id: "m-3", channel_id: "chan-1", content: "three",
+          attachment: { url: "https://cdn.example.test/a.txt", type: "text/plain" },
+          attachments: files.map((f, i) => ({ id: `att-${i}`, url: `https://cdn.example.test/${f.name}`, type: "text/plain", filename: f.name, size: f.text.length })),
+        },
+      }, 201);
+    }
+    return json({});
+  });
+  t.after(() => { globalThis.fetch = original; });
+
+  const { AttachmentBuilder, Attachment } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const channel = client.channels.cache.get("chan-1") ?? await client.channels.fetch("chan-1");
+
+  const msg = await channel.send({
+    content: "three",
+    files: [
+      new AttachmentBuilder(Buffer.from("one"), { name: "a.txt" }),
+      { attachment: Buffer.from("two"), name: "b.txt" },
+      new AttachmentBuilder(Buffer.from("three")).setName("c.txt"),
+    ],
+  });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].keys, ["payload_json", "files[0]", "files[1]", "files[2]"]);
+  assert.deepEqual(sent[0].files, [{ name: "a.txt", text: "one" }, { name: "b.txt", text: "two" }, { name: "c.txt", text: "three" }]);
+  assert.equal(sent[0].body.content, "three");
+  // The sent message's attachments come back as Attachments, in order.
+  assert.deepEqual([...msg.attachments.keys()], ["att-0", "att-1", "att-2"]);
+  assert.ok(msg.attachments.get("att-1") instanceof Attachment);
+  assert.equal(msg.attachments.get("att-1")?.name, "b.txt");
+
+  // Eleven: refused by name, with the limit, and nothing goes out.
+  await assert.rejects(
+    channel.send({ files: Array.from({ length: 11 }, (_, i) => ({ attachment: Buffer.from("x"), name: `${i}.txt` })) }),
+    (/** @type {any} */ e) => e instanceof XiveUnsupportedError && /10/.test(e.message),
+  );
+  assert.equal(sent.length, 1);
+  await client.destroy();
+});
+
+test("message.attachments: built from `attachments`; falls back to the old single `attachment`", () => {
+  const hub = /** @type {any} */ ({ id: "hub-1", slug: "test-hub" });
+  const channel = new Channel(null, hub, { id: "chan-1", name: "general", slug: "general", kind: "conversation" });
+
+  const msg = new Message(null, channel, {
+    id: "m-1", content: "",
+    attachment: { url: "https://cdn.example.test/u/shot.png", type: "image/png" },
+    attachments: [
+      { id: "a1", url: "https://cdn.example.test/u/shot.png", type: "image/png", filename: "shot.png", size: 12345 },
+      { id: null, url: "https://cdn.example.test/u/clip.mp4?v=2", type: "video/mp4", filename: null, size: null },
+    ],
+  });
+  assert.deepEqual([...msg.attachments.keys()], ["a1", "1"]);
+  const a = msg.attachments.get("a1");
+  assert.deepEqual({ ...a }, {
+    id: "a1", url: "https://cdn.example.test/u/shot.png", proxyURL: "https://cdn.example.test/u/shot.png",
+    contentType: "image/png", name: "shot.png", size: 12345, spoiler: false,
+  });
+  const b = msg.attachments.get("1");
+  assert.equal(b?.id, null);
+  assert.equal(b?.name, "clip.mp4");
+  assert.equal(b?.size, null);
+
+  // An older server: only `attachment`.
+  const legacy = new Message(null, channel, { id: "m-2", content: "", attachment: { url: "https://cdn.example.test/u/old.pdf", type: "application/pdf" } });
+  assert.equal(legacy.attachments.size, 1);
+  assert.deepEqual({ ...legacy.attachments.get("0") }, {
+    id: null, url: "https://cdn.example.test/u/old.pdf", proxyURL: "https://cdn.example.test/u/old.pdf",
+    contentType: "application/pdf", name: "old.pdf", size: null, spoiler: false,
+  });
+
+  // `attachments: []` wins over a stale `attachment`; neither → empty.
+  assert.equal(new Message(null, channel, { id: "m-3", content: "", attachments: [], attachment: { url: "https://x.test/a", type: null } }).attachments.size, 0);
+  assert.equal(new Message(null, channel, { id: "m-4", content: "" }).attachments.size, 0);
+});
+
 test("autocomplete: setAutocomplete registers it; getFocused + respond answer it", async (t) => {
   fakeGateway(t);
   const calls = fakeApi(t);
@@ -752,6 +849,67 @@ test("message.mentions: users, roles and channels read from the stored text; has
   assert.equal(all.mentions.users.size + all.mentions.roles.size + all.mentions.channels.size, 0);
   assert.ok(all.mentions.has("anyone"));
   assert.ok(!all.mentions.has("anyone", { ignoreEveryone: true }));
+  await client.destroy();
+});
+
+test("message.mentions: the server's list wins when the message carries one", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const { Member } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+  /** @type {any[]} */
+  const got = [];
+  client.on(Events.MessageCreate, (m) => got.push(m));
+
+  // A user this process never cached, a cached role and an unknown one, a cached channel and an
+  // unknown one. The text is deliberately unhelpful: the list, not the text, is the answer.
+  const listed = (/** @type {any} */ mentions, content = "see above") => ({ ...fromMember(content), mentions });
+  await publish(client, "message.created", listed({
+    everyone: false,
+    users: [{ id: "user-77", username: "nova", name: "Nova Star" }],
+    roles: [{ id: "role-mod", name: "Moderator" }, { id: "role-new", name: "Raiders" }],
+    channels: [{ id: "chan-1", name: "general" }, { id: "chan-new", name: "secret-plans" }],
+  }));
+  const msg = got.at(-1);
+  assert.deepEqual([...msg.mentions.users.keys()], ["user-77"]);
+  const nova = client.users.cache.get("user-77");
+  assert.ok(nova, "a mentioned user is added to client.users");
+  assert.equal(nova.username, "nova");
+  assert.equal(nova.displayName, "Nova Star");
+  assert.equal(msg.mentions.users.get("user-77"), nova);
+  assert.equal(msg.mentions.roles.get("role-mod"), hub.roles.cache.get("role-mod"), "a cached role is the cached object");
+  const raiders = msg.mentions.roles.get("role-new");
+  assert.ok(raiders instanceof Role && raiders.name === "Raiders", "an unknown role is a stub");
+  assert.equal(String(raiders), "@Raiders", "a stub still stringifies (a non-uuid id has no token)");
+  assert.equal(msg.mentions.channels.get("chan-1"), hub.channels.cache.get("chan-1"));
+  const secret = msg.mentions.channels.get("chan-new");
+  assert.ok(secret instanceof Channel && secret.name === "secret-plans", "an unknown channel is a stub");
+  assert.equal(msg.mentions.everyone, false);
+
+  assert.ok(msg.mentions.has(nova));
+  assert.ok(msg.mentions.has("role-new"));
+  assert.ok(msg.mentions.has("chan-new"));
+  const raider = new Member(client, hub, { profile_id: "user-9", username: "kai", role_ids: ["role-new"] });
+  assert.ok(msg.mentions.has(raider), "a member holding a listed role is mentioned");
+  assert.ok(!msg.mentions.has(raider, { ignoreRoles: true }));
+
+  // The text is not read when the list is there: `@sam` in it, an empty list — not mentioned.
+  await publish(client, "message.created", listed({ everyone: false, users: [], roles: [], channels: [] }, "hi @sam @everyone"));
+  const quiet = got.at(-1);
+  assert.equal(quiet.mentions.users.size, 0);
+  assert.equal(quiet.mentions.everyone, false, "everyone comes from the list too");
+  assert.ok(!quiet.mentions.has(client.users.cache.get("user-1")));
+
+  await publish(client, "message.created", listed({ everyone: true, users: [], roles: [], channels: [] }, ""));
+  const all = got.at(-1);
+  assert.ok(all.mentions.has("anyone"));
+  assert.ok(!all.mentions.has("anyone", { ignoreEveryone: true }));
+
+  // Message Content withheld: the server blanks the list as it blanks the text.
+  await publish(client, "message.created", { ...listed({ everyone: false, users: [], roles: [], channels: [] }, ""), content_redacted: true });
+  assert.equal(got.at(-1).mentions.users.size + got.at(-1).mentions.roles.size, 0);
   await client.destroy();
 });
 

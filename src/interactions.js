@@ -1,7 +1,7 @@
 import { Collection } from "./collection.js";
 import { ComponentType } from "./constants.js";
 import { enc } from "./rest.js";
-import { pickFile, resolveFile } from "./files.js";
+import { pickFiles, resolveFiles } from "./files.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { Member, Message, PermissionSet, Role, toXiveMessage } from "./structures.js";
 
@@ -108,8 +108,8 @@ export class BaseInteraction {
    */
   async reply(options) {
     const body = this.body(options);
-    const file = await this.#file(options, body.ephemeral);
-    const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "reply", ...body }, file);
+    const files = await this.#files(options, body.ephemeral);
+    const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "reply", ...body }, files);
     this.replied = true;
     this.ephemeral = body.ephemeral;
     if (typeof options === "object" && options?.fetchReply) return this._messageFrom(result, body, false);
@@ -132,7 +132,7 @@ export class BaseInteraction {
    * the raw `{ id }` when the answer is private. @param {any} options
    */
   async editReply(options) {
-    if (pickFile(options)) throw new XiveUnsupportedError("Files on editReply()", "use reply() or followUp() with the file");
+    if (pickFiles(options).length) throw new XiveUnsupportedError("Files on editReply()", "use reply() or followUp() with the file");
     const { ephemeral: _ignored, ...body } = this.body(options);
     const result = await this.client.core.rest.patch(`${this.base}/original`, body);
     this.replied = true;
@@ -147,17 +147,16 @@ export class BaseInteraction {
    */
   async followUp(options) {
     const body = this.body(options);
-    const file = await this.#file(options, body.ephemeral);
-    const result = await this.client.core.rest.post(`${this.base}/followups`, body, file);
+    const files = await this.#files(options, body.ephemeral);
+    const result = await this.client.core.rest.post(`${this.base}/followups`, body, files);
     return this._messageFrom(result, body, false);
   }
 
-  /** The one file in `options.files`, resolved — not on a private reply, which cannot carry one. */
-  async #file(/** @type {any} */ options, /** @type {boolean} */ ephemeral) {
-    const picked = pickFile(options);
-    if (!picked) return null;
+  /** The files in `options.files` (up to 10), resolved in order — not on a private reply, which cannot carry them. */
+  async #files(/** @type {any} */ options, /** @type {boolean} */ ephemeral) {
+    if (!pickFiles(options).length) return [];
     if (ephemeral) throw new XiveUnsupportedError("Files on ephemeral replies", "send the file in a public reply or follow-up");
-    return resolveFile(picked);
+    return resolveFiles(options);
   }
 }
 

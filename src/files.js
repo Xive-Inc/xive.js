@@ -4,7 +4,7 @@ import { XiveUnsupportedError } from "./errors.js";
 
 /**
  * A file to send — discord.js's `AttachmentBuilder`. Pass it, a Buffer, a file path, an http(s)
- * URL, or `{ attachment, name }` in `files`. Xive takes ONE file per message.
+ * URL, or `{ attachment, name }` in `files`. Xive takes up to MAX_FILES (10) files per message.
  */
 export class AttachmentBuilder {
   /**
@@ -21,17 +21,75 @@ export class AttachmentBuilder {
   /** @param {string} description */ setDescription(description) { this.description = description; return this; }
 }
 
+/** The most files one message carries. */
+export const MAX_FILES = 10;
+
 /**
- * The one file in `options.files`, or null. More than one throws: hub messages carry one file.
+ * The files in `options.files`, in order — `[]` when there are none. More than MAX_FILES throws.
  * @param {any} options
+ * @returns {any[]}
  */
-export function pickFile(options) {
+export function pickFiles(options) {
   const files = options && typeof options === "object" ? options.files : undefined;
-  if (!files?.length) return null;
-  if (files.length > 1) {
-    throw new XiveUnsupportedError("More than one file per message", "send one file per message");
+  if (!files?.length) return [];
+  checkFileCount(files.length);
+  return [...files];
+}
+
+/** @param {number} count */
+export function checkFileCount(count) {
+  if (count > MAX_FILES) {
+    throw new XiveUnsupportedError(`More than ${MAX_FILES} files per message`, `send at most ${MAX_FILES} files per message`);
   }
-  return files[0];
+}
+
+/**
+ * Every file in `options.files`, resolved in order — `[]` when there are none.
+ * @param {any} options
+ * @returns {Promise<{ data: Uint8Array, name: string }[]>}
+ */
+export function resolveFiles(options) {
+  return Promise.all(pickFiles(options).map(resolveFile));
+}
+
+/**
+ * A file on a received message — discord.js's `Attachment`. Built from one entry of the message's
+ * `attachments` array (`{ id, url, type, filename, size }`).
+ */
+export class Attachment {
+  /** @param {{ id?: string | null, url: string, type?: string | null, filename?: string | null, size?: number | null }} data */
+  constructor(data) {
+    /** The attachment's id; null on a message sent before attachments had ids. */
+    this.id = data.id ?? null;
+    this.url = data.url;
+    /** Xive serves files from where they are stored, so this is `url`. */
+    this.proxyURL = data.url;
+    this.contentType = data.type ?? null;
+    /** The filename, or the last part of the URL when the message has none. */
+    this.name = data.filename ?? (String(data.url).split("?")[0].split("/").pop() || "file");
+    /** Bytes, or null when unknown. */
+    this.size = data.size ?? null;
+    /** Xive has no spoiler files. */
+    this.spoiler = false;
+  }
+}
+
+/**
+ * A message's `attachments` array (or, from an older server, its single `attachment`) as
+ * `[key, Attachment]` pairs: keyed by id, or by position when the id is null.
+ * @param {any} data message JSON
+ * @returns {[string, Attachment][]}
+ */
+export function attachmentEntries(data) {
+  const list = Array.isArray(data?.attachments)
+    ? data.attachments
+    : data?.attachment?.url ? [{ id: null, url: data.attachment.url, type: data.attachment.type ?? null }] : [];
+  return list
+    .filter((/** @type {any} */ a) => a && typeof a.url === "string")
+    .map((/** @type {any} */ a, /** @type {number} */ i) => {
+      const att = new Attachment(a);
+      return /** @type {[string, Attachment]} */ ([att.id ?? String(i), att]);
+    });
 }
 
 /**

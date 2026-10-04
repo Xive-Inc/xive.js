@@ -272,7 +272,7 @@ export interface APICommandOption {
 
 /* ── Files ─────────────────────────────────────────────────────────────────────────────────── */
 
-/** A file to send. Xive takes ONE file per message. */
+/** A file to send. Xive takes up to 10 files per message. */
 export declare class AttachmentBuilder {
   /** @param attachment bytes, a file path, or an http(s) URL */
   constructor(attachment: Uint8Array | string, data?: { name?: string; description?: string });
@@ -571,7 +571,7 @@ export interface BaseMessageOptions {
 }
 
 export interface MessageCreateOptions extends BaseMessageOptions {
-  /** ONE file. More than one throws XiveUnsupportedError. */
+  /** Up to 10 files, sent in order. More than 10 throws XiveUnsupportedError. */
   files?: readonly AttachmentResolvable[];
   /** A poll is the whole message: no content, files, embeds or components with it. */
   poll?: PollData | APIPollData;
@@ -585,8 +585,9 @@ export type MessageReplyOptions = Omit<MessageCreateOptions, "reply" | "messageR
 export type MessageEditOptions = BaseMessageOptions;
 
 export interface InteractionReplyOptions extends BaseMessageOptions {
-  /** Only the member sees it. An ephemeral reply cannot carry a file. */
+  /** Only the member sees it. An ephemeral reply cannot carry files. */
   ephemeral?: boolean;
+  /** Up to 10 files, sent in order. More than 10 throws XiveUnsupportedError. */
   files?: readonly AttachmentResolvable[];
   poll?: PollData | APIPollData;
   /** `reply()` resolves to the Message (not the API's JSON), as in discord.js. */
@@ -760,14 +761,41 @@ export type UserResolvable = string | User | Member;
 
 /* ── Messages ──────────────────────────────────────────────────────────────────────────────── */
 
-export interface MessageAttachment {
-  id: string;
+/** One entry of a message's `attachments` array, as the API sends it. */
+export interface APIAttachment {
+  /** Null on a message sent before attachments had ids. */
+  id: string | null;
   url: string;
-  proxyURL: string;
-  contentType: string | null;
-  name: string;
+  /** The MIME type, e.g. `image/png`. */
+  type: string | null;
+  filename?: string | null;
+  size?: number | null;
 }
 
+/** A file on a received message — discord.js's `Attachment`. */
+export declare class Attachment {
+  constructor(data: APIAttachment);
+  /** Null on a message sent before attachments had ids (its key in `message.attachments` is then its position). */
+  id: string | null;
+  url: string;
+  /** The same as `url`: Xive serves files from where they are stored. */
+  proxyURL: string;
+  contentType: string | null;
+  /** The filename, or the last part of the URL when the message has none. */
+  name: string;
+  /** Bytes, or null when unknown. */
+  size: number | null;
+  /** Always false: Xive has no spoiler files. */
+  spoiler: false;
+}
+
+/** @deprecated Use `Attachment`. */
+export type MessageAttachment = Attachment;
+
+/**
+ * What a message mentions — the server's `mentions` list. A user it names is added to
+ * `client.users`; a role or channel this process has not cached is a stub with just id and name.
+ */
 export interface MessageMentions {
   everyone: boolean;
   users: Collection<string, User>;
@@ -809,7 +837,8 @@ export declare class Message {
   editedAt: Date | null;
   editedTimestamp: number | null;
   reference: { messageId: string; channelId: string; hubId: string } | null;
-  attachments: Collection<string, MessageAttachment>;
+  /** The message's files, in order, keyed by attachment id (or by position, as a string, when the id is null). */
+  attachments: Collection<string, Attachment>;
   embeds: APIEmbed[];
   /** Action rows of buttons / select menus, as JSON. */
   components: APIComponent[];
@@ -1422,7 +1451,9 @@ export declare class Client<out Ready extends boolean = boolean> extends EventEm
 export interface RequestOptions {
   body?: unknown;
   query?: Record<string, string | number | undefined>;
-  /** Sends multipart/form-data: the body as `payload_json`, the file as `files[0]`. */
+  /** Sends multipart/form-data: the body as `payload_json`, the files as `files[0]`…`files[9]`, in order. */
+  files?: { data: Uint8Array; name: string }[] | null;
+  /** One file — the same as `files: [file]`. */
   file?: { data: Uint8Array; name: string } | null;
 }
 
@@ -1435,7 +1466,8 @@ export declare class REST {
   /** Resolves to the response body without `success`; rejects with XiveAPIError. */
   request(method: string, path: string, options?: RequestOptions): Promise<any>;
   get(path: string, query?: Record<string, string | number | undefined>): Promise<any>;
-  post(path: string, body?: unknown, file?: { data: Uint8Array; name: string } | null): Promise<any>;
+  /** Files (up to 10, or one) go as multipart. */
+  post(path: string, body?: unknown, files?: { data: Uint8Array; name: string }[] | { data: Uint8Array; name: string } | null): Promise<any>;
   put(path: string, body?: unknown): Promise<any>;
   patch(path: string, body?: unknown): Promise<any>;
   delete(path: string, body?: unknown): Promise<any>;

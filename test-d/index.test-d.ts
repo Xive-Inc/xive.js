@@ -2,6 +2,7 @@
 import {
   ActionRowBuilder,
   ActivityType,
+  Attachment,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -101,6 +102,20 @@ client.on(Events.MessageCreate, async (message) => {
   const sent = await message.channel.send({ content: "with file", embeds: [embed], files: [new AttachmentBuilder("./a.png", { name: "a.png" })] });
   expectType<Message>(sent);
   await message.channel.send({ files: [Buffer.from("x"), { attachment: "https://example.com/a.png", name: "a.png" }] });
+  // Received files: a Collection of Attachments, keyed by id (or position).
+  expectType<Collection<string, Attachment>>(message.attachments);
+  const first = message.attachments.first();
+  if (first) {
+    expectType<string | null>(first.id);
+    expectType<string>(first.url);
+    expectType<string>(first.proxyURL);
+    expectType<string | null>(first.contentType);
+    expectType<string>(first.name);
+    expectType<number | null>(first.size);
+    expectType<false>(first.spoiler);
+  }
+  // Raw REST: several files go as multipart.
+  await new REST({ token: "t" }).post("/x", {}, [{ data: new Uint8Array(1), name: "a" }, { data: new Uint8Array(1), name: "b" }]);
 
   // Polls
   const pollMessage = await message.channel.send({

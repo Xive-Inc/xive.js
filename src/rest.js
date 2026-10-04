@@ -22,12 +22,15 @@ export class REST {
   /**
    * @param {string} method
    * @param {string} path  e.g. `/hubs/my-hub/app/channels`
-   * @param {{ body?: unknown, query?: Record<string, string | number | undefined>, file?: { data: Uint8Array, name: string } | null }} [options]
-   *   `file` sends multipart/form-data: the body as `payload_json`, the file as `files[0]` —
-   *   Discord's shape, which the API takes on message sends, replies and follow-ups.
+   * @param {{ body?: unknown, query?: Record<string, string | number | undefined>, files?: { data: Uint8Array, name: string }[] | null, file?: { data: Uint8Array, name: string } | null }} [options]
+   *   Non-empty `files` sends multipart/form-data: the body as `payload_json`, the files as
+   *   `files[0]`…`files[9]` in order — Discord's shape, which the API takes on message sends,
+   *   replies and follow-ups. `file` (one file) is still taken, as `files: [file]`.
    * @returns {Promise<any>} the response body, without `success`
    */
-  async request(method, path, { body, query, file = null } = {}) {
+  async request(method, path, { body, query, files = null, file = null } = {}) {
+    if (!files?.length && file) files = [file];
+    const multipart = Array.isArray(files) && files.length > 0;
     let url = this.baseURL + path;
     if (query) {
       const params = new URLSearchParams();
@@ -41,11 +44,11 @@ export class REST {
     for (let attempt = 0; ; attempt++) {
       /** @type {any} */
       let payload = body !== undefined ? JSON.stringify(body) : undefined;
-      if (file) {
+      if (multipart) {
         // Rebuilt per attempt: a FormData body is consumed by the request that sends it.
         payload = new FormData();
         payload.append("payload_json", JSON.stringify(body ?? {}));
-        payload.append("files[0]", new Blob([file.data]), file.name);
+        files.forEach((f, i) => payload.append(`files[${i}]`, new Blob([f.data]), f.name));
       }
       const res = await this.fetch(url, {
         method,
@@ -53,7 +56,7 @@ export class REST {
           Authorization: `Bearer ${this.token}`,
           Accept: "application/json",
           // Multipart sets its own Content-Type, boundary included.
-          ...(body !== undefined && !file ? { "Content-Type": "application/json" } : {}),
+          ...(body !== undefined && !multipart ? { "Content-Type": "application/json" } : {}),
         },
         body: payload,
       });
@@ -85,9 +88,13 @@ export class REST {
     return this.request("GET", path, { query });
   }
 
-  /** @param {string} path @param {unknown} [body] @param {{ data: Uint8Array, name: string } | null} [file] */
-  post(path, body, file = null) {
-    return this.request("POST", path, { body, file });
+  /**
+   * @param {string} path @param {unknown} [body]
+   * @param {{ data: Uint8Array, name: string }[] | { data: Uint8Array, name: string } | null} [files]
+   *   up to 10 files (a single file is taken too), sent as multipart
+   */
+  post(path, body, files = null) {
+    return this.request("POST", path, { body, files: files && !Array.isArray(files) ? [files] : files });
   }
 
   /** @param {string} path @param {unknown} [body] */
