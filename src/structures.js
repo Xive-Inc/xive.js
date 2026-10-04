@@ -251,7 +251,7 @@ export class Member {
 /* ── Messages ───────────────────────────────────────────────────────────────────────────────── */
 
 /**
- * Send options (a string, or `{ content, embeds, reply }`) → the Xive message body. Refuses what
+ * Send options (a string, or `{ content, embeds, components, reply }`) → the Xive message body. Refuses what
  * has no Xive equivalent, by name.
  *
  * @param {Client} client
@@ -261,22 +261,83 @@ export class Member {
 export function toXiveMessage(client, hub, options) {
   const o = typeof options === "string" ? { content: options } : options instanceof Object ? options : { content: String(options) };
   if (o.files?.length || o.attachments?.length) {
-    throw new XiveUnsupportedError("File uploads from applications", "link the file, or put an image URL in an embed");
+    throw new XiveUnsupportedError("File uploads from applications", "link the file, or show an image URL in an embed or a Media Gallery");
   }
   if (o.poll) throw new XiveUnsupportedError("Polls");
   if (o.stickers?.length) throw new XiveUnsupportedError("Stickers from applications");
 
   /** @type {Record<string, unknown>} */
   const body = {};
-  if (o.content !== undefined && o.content !== null) body.content = translateMentions(client, hub, String(o.content));
-  if (o.embeds?.length) body.embeds = o.embeds.map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e));
-  // Rows of buttons / a select menu. `[]` on an edit removes them; absent leaves them as they are.
+  const translate = (/** @type {string} */ text) => translateMentions(client, hub, text);
+  if (o.content !== undefined && o.content !== null) body.content = translate(String(o.content));
+  // Rows of buttons / a select menu, or a components tree. `[]` on an edit removes them; absent
+  // leaves them as they are.
   if (Array.isArray(o.components)) {
     body.components = o.components.map((/** @type {any} */ r) => (typeof r?.toJSON === "function" ? r.toJSON() : r));
+  }
+
+  /*
+   * Xive takes no embeds from an application, and no content beside components — the API answers
+   * both with a 400. A bot written for Discord does both constantly, so the shapes are rebuilt here
+   * rather than refused: each embed becomes a Container, and content becomes the Text Display
+   * above it. What the reader sees is the same card.
+   */
+  const embeds = (o.embeds ?? []).map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e));
+  const cards = embeds.map((/** @type {any} */ e) => embedToContainer(e, translate)).filter(Boolean);
+  if (cards.length) body.components = [...cards, .../** @type {any[]} */ (body.components ?? [])];
+  const components = /** @type {any[] | undefined} */ (body.components);
+  if (components?.length && typeof body.content === "string") {
+    if (body.content.trim() !== "") body.components = [{ type: 10, content: body.content }, ...components];
+    delete body.content;
   }
   const replyTo = o.reply?.messageReference ?? o.messageReference;
   if (replyTo) body.reply_to_id = typeof replyTo === "string" ? replyTo : replyTo.messageId ?? replyTo.id;
   return body;
+}
+
+/**
+ * One embed (EmbedBuilder JSON) → a Container (type 17) that draws the same card.
+ *
+ * Author, title and description are one Text Display — beside the thumbnail in a Section when
+ * there is one — each field is a Text Display of its own, the image is a Media Gallery, and the
+ * footer and timestamp are the last line. `color` is the accent bar. Author and footer icons have
+ * no place in a Container and are dropped. Null for an embed with nothing to draw.
+ *
+ * @param {any} e @param {(text: string) => string} translate
+ */
+export function embedToContainer(e, translate) {
+  if (!e || typeof e !== "object") return null;
+  const str = (/** @type {unknown} */ v) => (typeof v === "string" && v.trim() !== "" ? v : null);
+  const link = (/** @type {string} */ text, /** @type {unknown} */ url) => (str(url) ? `[${text}](${url})` : text);
+
+  const head = [];
+  if (str(e.author?.name)) head.push(`**${link(e.author.name, e.author.url)}**`);
+  if (str(e.title)) head.push(`## ${link(e.title, e.url)}`);
+  if (str(e.description)) head.push(translate(e.description));
+
+  /** @type {any[]} */
+  const parts = [];
+  const thumb = str(e.thumbnail?.url);
+  if (head.length && thumb) {
+    parts.push({ type: 9, components: [{ type: 10, content: head.join("\n") }], accessory: { type: 11, media: { url: thumb } } });
+  } else if (head.length) {
+    parts.push({ type: 10, content: head.join("\n") });
+  }
+  for (const f of Array.isArray(e.fields) ? e.fields : []) {
+    if (str(f?.name) && str(f?.value)) parts.push({ type: 10, content: `**${f.name}**\n${translate(f.value)}` });
+  }
+  const images = [str(e.image?.url), head.length ? null : thumb].filter(Boolean);
+  if (images.length) parts.push({ type: 12, items: images.map((url) => ({ media: { url } })) });
+
+  const stamp = e.timestamp ? new Date(e.timestamp) : null;
+  const foot = [str(e.footer?.text), stamp && !Number.isNaN(stamp.valueOf()) ? stamp.toUTCString() : null].filter(Boolean);
+  if (foot.length) parts.push({ type: 10, content: `*${foot.join(" · ")}*` });
+
+  if (parts.length === 0) return null;
+  /** @type {any} */
+  const container = { type: 17, components: parts };
+  if (Number.isInteger(e.color)) container.accent_color = e.color;
+  return container;
 }
 
 /**
@@ -559,7 +620,7 @@ export class Channel {
       `/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/messages`, body
     );
     return this.messages.add({
-      created_at: new Date().toISOString(), reply_to_id: body.reply_to_id ?? null, embeds: body.embeds, ...message,
+      created_at: new Date().toISOString(), reply_to_id: body.reply_to_id ?? null, components: body.components, ...message,
     });
   }
 

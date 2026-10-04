@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Connection } from "./connection.js";
+import { embedToContainer } from "./structures.js";
 import {
   Client, Events, EmbedBuilder, SlashCommandBuilder, Permissions, XiveUnsupportedError,
 } from "./index.js";
@@ -98,8 +99,12 @@ test("a discord.js-style bot, ported: ready, !ping, embeds, moderation, reaction
 
   await publish(client, "message.created", fromMember("!info"));
   post = calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).at(-1);
-  assert.equal(post?.body.embeds[0].title, "Hub");
-  assert.equal(post?.body.embeds[0].fields[0].value, "Test Hub");
+  // Xive takes no embeds from an application: the card is sent as a Container that draws the same.
+  assert.equal(post?.body.embeds, undefined);
+  assert.deepEqual(post?.body.components, [{
+    type: 17, accent_color: 0x5865f2,
+    components: [{ type: 10, content: "## Hub" }, { type: 10, content: "**Name**\nTest Hub" }],
+  }]);
 
   // The author holds Moderator (role-mod), whose permissions include mod_ban.
   await client.hubs.cache.get("hub-1")?.members.fetch("user-1");
@@ -252,7 +257,10 @@ test("components: buttons, a collector that updates, a select menu, and a form",
 
   await publish(client, "message.created", fromMember("!vote"));
   const send = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));
-  assert.deepEqual(send?.body.components, [{ type: 1, components: [
+  // Content beside components is a 400 on Xive, so it is sent as the Text Display above them.
+  assert.equal(send?.body.content, undefined);
+  assert.deepEqual(send?.body.components?.[0], { type: 10, content: "Vote!" });
+  assert.deepEqual(send?.body.components?.slice(1), [{ type: 1, components: [
     { type: 2, custom_id: "yes", label: "Yes", style: 3 },
     { type: 2, custom_id: "no", label: "No", style: 4 },
     { type: 2, label: "Docs", style: 5, url: "https://example.com" },
@@ -276,4 +284,21 @@ test("components: buttons, a collector that updates, a select menu, and a form",
   await ix("ix-sub", { type: "modal_submit", custom_id: "fb", fields: [{ custom_id: "text", value: "great bot" }], message: { id: "sent-1", private: false } });
   assert.deepEqual(calls.filter((c) => c.path.endsWith("/ix-sub/callback")).at(-1)?.body,
     { type: "reply", content: "Thanks: great bot", ephemeral: true });
+});
+
+test("embedToContainer: thumbnail beside the heading, image, footer, nothing for an empty embed", () => {
+  const id = (/** @type {string} */ t) => t;
+  assert.deepEqual(embedToContainer({
+    title: "Status", url: "https://example.com/s", description: "All good", color: 0x00ff00,
+    thumbnail: { url: "https://example.com/t.png" }, image: { url: "https://example.com/i.png" },
+    footer: { text: "ops" }, timestamp: "2026-10-04T12:00:00Z",
+  }, id), {
+    type: 17, accent_color: 0x00ff00,
+    components: [
+      { type: 9, components: [{ type: 10, content: "## [Status](https://example.com/s)\nAll good" }], accessory: { type: 11, media: { url: "https://example.com/t.png" } } },
+      { type: 12, items: [{ media: { url: "https://example.com/i.png" } }] },
+      { type: 10, content: "*ops · Sun, 04 Oct 2026 12:00:00 GMT*" },
+    ],
+  });
+  assert.equal(embedToContainer({ color: 1 }, id), null);
 });

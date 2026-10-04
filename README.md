@@ -54,6 +54,11 @@ A few things work differently:
 - **Mentions are plain text** (`@username`, `@Role`). `${user}` and `${role}` mention them.
   `${channel}` is the channel's link (`channel.url`), which readers who can see it get as a
   #channel pill. `<@id>`, `<@&id>` and `<#id>` tokens are converted when the target is cached.
+- **Embeds are sent as components.** Xive takes no embeds from an application, so each
+  `EmbedBuilder` is sent as a Container that draws the same card (title, description, fields,
+  thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with
+  components or embeds becomes the Text Display above them, since Xive refuses content beside
+  components. Text across the message is capped at 4000 characters.
 - **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
   and unbanning from a bot. Subcommands aren't supported; register each one as its own command.
   Only string select menus exist; user, role and channel selects don't yet.
