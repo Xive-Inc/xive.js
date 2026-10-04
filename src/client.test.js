@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Connection } from "./connection.js";
-import { embedToContainer } from "./structures.js";
+import { Channel, Message, Role, User, embedToContainer, translateMentions } from "./structures.js";
 import {
   Client, Events, EmbedBuilder, SlashCommandBuilder, Permissions, XiveUnsupportedError,
 } from "./index.js";
@@ -90,7 +90,7 @@ test("a discord.js-style bot, ported: ready, !ping, embeds, moderation, reaction
   // ──────────────────────────────────────────────────────────────────────────────────────────
 
   assert.deepEqual(log, ["ready as Modbot in 1 hub(s)"]);
-  assert.equal(client.channels.cache.get("chan-1")?.toString(), "https://hub.thexive.com/hub/test-hub/conversations/general");
+  assert.equal(client.channels.cache.get("chan-1")?.url, "https://hub.thexive.com/hub/test-hub/conversations/general");
 
   await publish(client, "message.created", fromMember("!ping"));
   let post = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));
@@ -301,4 +301,27 @@ test("embedToContainer: thumbnail beside the heading, image, footer, nothing for
     ],
   });
   assert.equal(embedToContainer({ color: 1 }, id), null);
+});
+
+test("mentions: Xive tokens out, Discord tokens converted, has() reads the stored form", () => {
+  const uid = "c0901ae8-6771-4e9a-b40c-b6e72d3ca397";
+  const rid = "11111111-2222-4333-8444-555555555555";
+  const cid = "66666666-7777-4888-9999-000000000000";
+  const hub = { id: "h", slug: "acme", members: { cache: new Map() } };
+  const user = new User(null, { id: uid, username: "luna" });
+  const role = new Role(null, hub, { id: rid, name: "Moderator" });
+  const channel = new Channel(null, hub, { id: cid, name: "general", slug: "general", kind: "conversation" });
+
+  assert.equal(`${user} ${role} ${channel}`, `<user:${uid}> <role:${rid}> <channel:${cid}>`);
+  // A webhook author's stand-in id is not a uuid, so it cannot be a token.
+  assert.equal(`${new User(null, { id: "webhook:CI", username: "CI" })}`, "@CI");
+  assert.equal(translateMentions(null, null, `<@${uid}> <@!${uid}> <@&${rid}> <#${cid}>`),
+    `<user:${uid}> <user:${uid}> <role:${rid}> <channel:${cid}>`);
+
+  // What the server stored for `${user} ${role} ${channel}`.
+  const msg = new Message(null, channel, { id: "m", content: `@luna @Moderator ${channel.url}` });
+  assert.ok(msg.mentions.has(user));
+  assert.ok(msg.mentions.has(role));
+  assert.ok(msg.mentions.has(channel));
+  assert.ok(!msg.mentions.has(new User(null, { id: rid, username: "sol" })));
 });

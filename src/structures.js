@@ -59,6 +59,25 @@ export class PermissionSet {
 
 /* ── Users ──────────────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * Xive ids are uuids. Anything else — the stand-in id a webhook author gets — cannot be a token,
+ * so it stringifies to the plain form instead.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What a mention of `target` looks like in a STORED message. The server rewrites `<user:id>`,
+ * `<role:id>` and `<channel:id>` into this before storing, so this, not `toString()`, is what a
+ * received message's content contains. @param {any} target
+ */
+function storedMention(target) {
+  if (target instanceof Member) target = target.user;
+  if (target instanceof User) return `@${target.username}`;
+  if (target instanceof Role) return `@${target.name}`;
+  if (target instanceof Channel) return target.url ?? `#${target.name}`;
+  return `@${target}`;
+}
+
 export class User {
   /**
    * @param {Client} client
@@ -82,8 +101,8 @@ export class User {
   displayAvatarURL() { return this.avatar ?? null; }
   avatarURL() { return this.avatar; }
 
-  /** Xive mentions are plain `@username`, so interpolating a user mentions them. */
-  toString() { return `@${this.username}`; }
+  /** `<user:id>` — interpolating a user mentions them, and survives a rename. */
+  toString() { return UUID.test(this.id) ? `<user:${this.id}>` : `@${this.username}`; }
 
   send() { return Promise.reject(noDMs()); }
   createDM() { return Promise.reject(noDMs()); }
@@ -111,7 +130,8 @@ export class Role {
     this.managed = Boolean(data.managed);
     this.permissions = new PermissionSet(data.permissions ?? []);
   }
-  toString() { return `@${this.name}`; }
+  /** `<role:id>` — interpolating a role mentions it. */
+  toString() { return UUID.test(this.id) ? `<role:${this.id}>` : `@${this.name}`; }
   edit(/** @type {{ name?: string, color?: string }} */ data) {
     return this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`, data);
   }
@@ -341,19 +361,18 @@ export function embedToContainer(e, translate) {
 }
 
 /**
- * `<@id>`, `<@&id>` and `<#id>` tokens → Xive's plain `@username`, `@Role` and `#channel`, from
- * what is cached. Xive mentions are plain text; the tokens are accepted because bots written for
- * other platforms build them everywhere. A token whose target is not cached becomes Xive's own
- * `<user:id>`, `<role:id>` or `<channel:id>`, which the server resolves (HubMentions::expandTokens),
- * so it still pings.
+ * Discord's `<@id>`, `<@!id>`, `<@&id>` and `<#id>` → Xive's `<user:id>`, `<role:id>` and
+ * `<channel:id>`, which the server resolves (HubMentions::expandTokens). Accepted because bots
+ * written for other platforms build them everywhere; no cache is needed, since the id is all a
+ * token carries. `client` and `hub` are unused and kept so existing callers do not break.
  *
- * @param {Client} client @param {Hub | null} hub @param {string} content
+ * @param {Client} _client @param {Hub | null} _hub @param {string} content
  */
-export function translateMentions(client, hub, content) {
+export function translateMentions(_client, _hub, content) {
   return content.replace(/<(@!?|@&|#)([0-9a-fA-F-]{8,})>/g, (_whole, kind, id) => {
-    if (kind === "#") return client.channels.cache.get(id)?.toString() ?? `<channel:${id}>`;
-    if (kind === "@&") return hub?.roles.cache.get(id)?.toString() ?? `<role:${id}>`;
-    return client.users.cache.get(id)?.toString() ?? `<user:${id}>`;
+    if (kind === "#") return `<channel:${id}>`;
+    if (kind === "@&") return `<role:${id}>`;
+    return `<user:${id}>`;
   });
 }
 
@@ -410,10 +429,14 @@ export class Message {
       users: new Collection(),
       roles: new Collection(),
       channels: new Collection(),
-      /** Xive mentions are `@username` / `@Role` in the text, so this reads the text. @param {any} target */
+      /**
+       * Reads the text for the STORED form (`@username`, `@Role`, the channel's link) — not
+       * `toString()`, which is the `<user:id>` token the server rewrites on the way in.
+       * @param {any} target
+       */
       has: (target) => {
         if (!target) return false;
-        const label = typeof target.toString === "function" ? target.toString() : `@${target}`;
+        const label = storedMention(target);
         return label.length > 1 && content.includes(label);
       },
     };
@@ -612,8 +635,11 @@ export class Channel {
     return `${APP_ORIGIN}/hub/${encodeURIComponent(this.hub.slug)}/${section}/${encodeURIComponent(this.slug)}`;
   }
 
-  /** `${channel}` in a message mentions it: its link where it has one, `#name` otherwise. */
-  toString() { return this.url ?? `#${this.name}`; }
+  /**
+   * `<channel:id>` — the server stores it as the channel's link, which readers who can see the
+   * channel get as a #channel pill (`#name` for a thread, which has no link).
+   */
+  toString() { return UUID.test(this.id) ? `<channel:${this.id}>` : (this.url ?? `#${this.name}`); }
 
   /** @param {any} options */
   async send(options) {

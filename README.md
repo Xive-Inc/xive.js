@@ -51,9 +51,10 @@ Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove
 A few things work differently:
 
 - **Ids are uuids.** They're still strings, but you can't parse them as numbers.
-- **Mentions are plain text** (`@username`, `@Role`). `${user}` and `${role}` mention them.
-  `${channel}` is the channel's link (`channel.url`), which readers who can see it get as a
-  #channel pill. `<@id>`, `<@&id>` and `<#id>` tokens are converted when the target is cached.
+- **Mentions are `<user:id>`, `<role:id>` and `<channel:id>`**, and `${user}`, `${member}`,
+  `${role}` and `${channel}` produce them. The server stores them as `@username`, `@Role` and the
+  channel's link (a #channel pill for readers who can see it), so that is what received messages
+  contain. Discord's `<@id>`, `<@&id>` and `<#id>` are converted for you.
 - **Embeds are sent as components.** Xive takes no embeds from an application, so each
   `EmbedBuilder` is sent as a Container that draws the same card (title, description, fields,
   thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with
