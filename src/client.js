@@ -31,7 +31,9 @@ export class Client extends EventEmitter {
    *   baseURL?: string,
    *   signingSecret?: string,
    *   WebSocket?: any,
+   *   presence?: { status?: string, activity?: { name: string, type?: string } | null },
    * }} [options]  `WebSocket` only on Node < 22 (pass the `ws` package); `signingSecret` only for HTTP delivery.
+   *   `presence` is set during `login()`, before `ready`.
    */
   constructor(options = {}) {
     super({ captureRejections: true });
@@ -76,6 +78,7 @@ export class Client extends EventEmitter {
     this.application = { id: app.id, commands: new ApplicationCommandManager(this) };
 
     await this.hubs.fetch();
+    if (this.options.presence) await this.user.setPresence(this.options.presence);
     this.#wire(this.core);
     if (gateway) await this.core.connect();
 

@@ -80,6 +80,7 @@ Change the import and the token, then rename the things below. The rest of the b
 | `guild.members.me.roles.cache`, `.roles.highest`, `.permissions` | `hub.me.roles`, `hub.me.highest`, `hub.me.permissions`. An app isn't a member; call `hub.me.fetch()` after its roles change |
 | `channel.type === ChannelType.GuildText` | `channel.kind === ChannelKind.Text` |
 | `new REST().put(Routes.applicationCommands(id), { body })` | `client.application.commands.set(commands)` |
+| `setPresence({ activities: [a], status: "idle" })` | `setPresence({ activity: a, status: "away" })`. One activity; statuses are `online`, `away`, `busy`, `invisible` (`idle` → `away`, `dnd` → `busy`). Returns a Promise |
 
 Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove`, `reply`,
 `send`, `edit`, `delete`, `react`, `pin`, `channel.messages.fetch({ limit, before, after })`,
@@ -103,7 +104,27 @@ A few things work differently:
 - **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
   and unbanning from a bot. Subcommands aren't supported; register each one as its own command.
   Only string select menus exist; user, role and channel selects don't yet.
-- **Not available yet:** voice, and bot presence and activity.
+- **Presence shows only while the bot is connected to the gateway.** An HTTP-only bot can set
+  it, but it never appears. There is no `Streaming` activity type, and presence can change once
+  every 4 seconds (the client waits out the limit for you).
+- **Not available yet:** voice.
+
+## Presence
+
+```js
+import { Client, ActivityType } from "xive.js";
+
+// Set during login, before `ready`:
+const client = new Client({ presence: { activity: { name: "/help", type: ActivityType.Listening } } });
+
+// Or any time after:
+await client.user.setActivity(`${client.hubs.cache.size} hubs`, { type: ActivityType.Watching });
+await client.user.setStatus("away");
+await client.user.setActivity(); // clears it
+```
+
+Xive keeps the last presence you set, across restarts. It shows under the bot's name in every hub
+that installed it, but only while the bot is connected.
 
 ## Slash commands
 

@@ -1,5 +1,5 @@
 import { Collection } from "./collection.js";
-import { ChannelKind, Permissions } from "./constants.js";
+import { ActivityType, ChannelKind, Permissions } from "./constants.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
 
@@ -108,10 +108,68 @@ export class User {
   createDM() { return Promise.reject(noDMs()); }
 }
 
+/**
+ * @typedef {{ name: string, type?: string }} ActivityData
+ * @typedef {{ status: string, activity: { type: string, name: string } | null }} Presence
+ */
+
 export class ClientUser extends User {
   /** @param {Client} client @param {{ id: string, name: string, icon_url?: string | null }} app */
   constructor(client, app) {
     super(client, { id: app.id, username: app.name, name: app.name, avatar_url: app.icon_url ?? null, bot: true });
+    /**
+     * The presence last set from this process, or null before the first `setPresence`. It is
+     * stored by Xive and kept across restarts, but it only shows while the bot is connected to the
+     * gateway — an offline bot shows nothing.
+     * @type {Presence | null}
+     */
+    this.presence = null;
+  }
+
+  /**
+   * Set the bot's status and/or activity. A key left out is unchanged; `activity: null` clears it.
+   *
+   * ```js
+   * await client.user.setPresence({ status: "away", activity: { name: "40 hubs", type: ActivityType.Watching } });
+   * ```
+   *
+   * @param {{ status?: string, activity?: ActivityData | null }} data
+   *   status: `online`, `away`, `busy` or `invisible`. Activity type defaults to `playing`.
+   * @returns {Promise<Presence>}
+   */
+  async setPresence(data) {
+    /** @type {Record<string, unknown>} */
+    const body = {};
+    if (data?.status !== undefined) body.status = data.status;
+    if (data?.activity !== undefined) {
+      body.activity = data.activity === null
+        ? null
+        : { name: data.activity.name, type: data.activity.type ?? ActivityType.Playing };
+    }
+    const res = await this.client.core.rest.patch("/hubs/applications/@me/presence", body);
+    this.presence = res.presence;
+    return res.presence;
+  }
+
+  /**
+   * Set (or, with no name, clear) the activity line under the bot's name.
+   *
+   * ```js
+   * await client.user.setActivity("/help", { type: ActivityType.Listening });
+   * ```
+   *
+   * @param {string | ActivityData | null} [name]
+   * @param {{ type?: string }} [options]
+   */
+  setActivity(name, options = {}) {
+    if (name === undefined || name === null || name === "") return this.setPresence({ activity: null });
+    const activity = typeof name === "object" ? name : { name, type: options.type };
+    return this.setPresence({ activity });
+  }
+
+  /** @param {string} status `online`, `away`, `busy` or `invisible` */
+  setStatus(status) {
+    return this.setPresence({ status });
   }
 }
 

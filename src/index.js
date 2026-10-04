@@ -1,5 +1,5 @@
 export { Client } from "./client.js";
-export { Events, Permissions, ChannelKind, OptionType, Colors, ComponentType, ButtonStyle, TextInputStyle } from "./constants.js";
+export { Events, Permissions, ActivityType, ChannelKind, OptionType, Colors, ComponentType, ButtonStyle, TextInputStyle } from "./constants.js";
 export { Collection } from "./collection.js";
 export {
   EmbedBuilder, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder,

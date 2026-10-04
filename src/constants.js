@@ -64,6 +64,18 @@ export const Permissions = Object.freeze({
   MoveMembers: "room_move",
 });
 
+/**
+ * What a bot's activity line says — `client.user.setActivity(name, { type })`. discord.js's
+ * `ActivityType` without `Streaming`, since on Xive streaming is a real live stream.
+ */
+export const ActivityType = Object.freeze({
+  Playing: "playing",
+  Watching: "watching",
+  Listening: "listening",
+  Competing: "competing",
+  Custom: "custom",
+});
+
 /** What a channel is. `channel.kind` holds one of these. */
 export const ChannelKind = Object.freeze({
   Text: "conversation",

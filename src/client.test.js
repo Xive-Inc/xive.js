@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Connection } from "./connection.js";
 import { Channel, Message, Role, User, embedToContainer, translateMentions } from "./structures.js";
 import {
-  Client, Events, EmbedBuilder, SlashCommandBuilder, Permissions, XiveUnsupportedError,
+  Client, Events, EmbedBuilder, SlashCommandBuilder, Permissions, XiveUnsupportedError, ActivityType,
 } from "./index.js";
 
 const APP = { id: "app-1", name: "Modbot", client_id: "c", icon_url: null };
@@ -24,6 +24,9 @@ function fakeApi(t) {
     if (path === "/hubs/applications/@me") return json({ application: APP });
     if (path === "/hubs/applications/@me/hubs") return json({ hubs: [HUB] });
     if (path === "/hubs/applications/@me/commands") return json({ commands: body?.commands ?? [] });
+    if (path === "/hubs/applications/@me/presence") {
+      return json({ presence: { status: body.status ?? "online", activity: body.activity ?? null } });
+    }
     if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
     if (path === "/hubs/hub-1/app/roles") return json({ roles: [{ id: "role-mod", name: "Moderator", color: "#ff0000", rank: 500, managed: false, permissions: ["mod_ban", "mod_kick"] }] });
     if (path === "/hubs/hub-1/app/channels/chan-1/messages" && method === "POST") {
@@ -362,5 +365,34 @@ test("hub.me: the app's own roles and permissions, refreshed by fetch()", async 
   assert.deepEqual([...hub.me.roles.keys()], ["role-app"]);
   assert.ok(!hub.me.permissions.has("BanMembers"));
 
+  await client.destroy();
+});
+
+test("presence: the client option is set before ready; setActivity, setStatus and clearing", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({
+    baseURL: "https://api.example.test",
+    presence: { status: "away", activity: { name: "40 hubs", type: ActivityType.Watching } },
+  });
+  let atReady = null;
+  client.once(Events.ClientReady, (c) => { atReady = c.user.presence; });
+  await client.login("xive_as_test");
+
+  assert.deepEqual(atReady, { status: "away", activity: { name: "40 hubs", type: "watching" } });
+
+  await client.user.setActivity("/help", { type: ActivityType.Listening });
+  await client.user.setActivity("a game");
+  await client.user.setStatus("busy");
+  await client.user.setActivity();
+
+  const sent = calls.filter((c) => c.path === "/hubs/applications/@me/presence").map((c) => [c.method, c.body]);
+  assert.deepEqual(sent, [
+    ["PATCH", { status: "away", activity: { name: "40 hubs", type: "watching" } }],
+    ["PATCH", { activity: { name: "/help", type: "listening" } }],
+    ["PATCH", { activity: { name: "a game", type: "playing" } }],
+    ["PATCH", { status: "busy" }],
+    ["PATCH", { activity: null }],
+  ]);
   await client.destroy();
 });
