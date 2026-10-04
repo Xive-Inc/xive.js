@@ -2,7 +2,7 @@ export { Client } from "./client.js";
 export { Events, Permissions, ActivityType, ChannelKind, OptionType, Colors, ComponentType, ButtonStyle, TextInputStyle } from "./constants.js";
 export { Collection } from "./collection.js";
 export {
-  EmbedBuilder, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder,
+  EmbedBuilder, SlashCommandBuilder, SlashCommandSubcommandBuilder, SlashCommandSubcommandGroupBuilder, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder,
 } from "./builders.js";
 export { Hub, HubMe, Channel, Member, Role, User, ClientUser, Message, MessageReaction, PermissionSet } from "./structures.js";

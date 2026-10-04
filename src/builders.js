@@ -89,14 +89,76 @@ class OptionBuilder {
   }
 }
 
-export class SlashCommandBuilder {
+/**
+ * The `add…Option` methods, shared by a command and a subcommand.
+ * @template {{ options: any[] }} T
+ * @param {T} target
+ */
+function optionAdders(target) {
+  /** @param {string} type @param {(o: OptionBuilder) => OptionBuilder} [fn] */
+  const add = (type, fn) => {
+    const option = new OptionBuilder(type);
+    target.options.push(fn ? fn(option) : option);
+    return target;
+  };
+  return {
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addStringOption: (fn) => add(OptionType.String, fn),
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addIntegerOption: (fn) => add(OptionType.Integer, fn),
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addBooleanOption: (fn) => add(OptionType.Boolean, fn),
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addUserOption: (fn) => add(OptionType.User, fn),
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addChannelOption: (fn) => add(OptionType.Channel, fn),
+    /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addRoleOption: (fn) => add(OptionType.Role, fn),
+  };
+}
+
+/** One subcommand: `/mod ban`. Takes ordinary options, like a command. */
+export class SlashCommandSubcommandBuilder {
   constructor() {
+    this.type = OptionType.Subcommand;
     this.name = "";
     this.description = "";
     /** @type {OptionBuilder[]} */
     this.options = [];
+    Object.assign(this, optionAdders(this));
+  }
+  /** @param {string} name */ setName(name) { this.name = name; return this; }
+  /** @param {string} d */ setDescription(d) { this.description = d; return this; }
+  toJSON() {
+    return { type: this.type, name: this.name, description: this.description, options: this.options.map((o) => o.toJSON()) };
+  }
+}
+
+/** A group of subcommands: the `role` in `/mod role add`. Holds subcommands only. */
+export class SlashCommandSubcommandGroupBuilder {
+  constructor() {
+    this.type = OptionType.SubcommandGroup;
+    this.name = "";
+    this.description = "";
+    /** @type {SlashCommandSubcommandBuilder[]} */
+    this.options = [];
+  }
+  /** @param {string} name */ setName(name) { this.name = name; return this; }
+  /** @param {string} d */ setDescription(d) { this.description = d; return this; }
+  /** @param {(s: SlashCommandSubcommandBuilder) => SlashCommandSubcommandBuilder} fn */
+  addSubcommand(fn) { const sub = new SlashCommandSubcommandBuilder(); this.options.push(fn ? fn(sub) : sub); return this; }
+  toJSON() {
+    return { type: this.type, name: this.name, description: this.description, options: this.options.map((o) => o.toJSON()) };
+  }
+}
+
+/**
+ * A slash command. Give it options, or subcommands (and subcommand groups) — not both, as on
+ * Discord. Each subcommand appears to members as its own entry: `/mod ban`, `/mod kick`.
+ */
+export class SlashCommandBuilder {
+  constructor() {
+    this.name = "";
+    this.description = "";
+    /** @type {any[]} */
+    this.options = [];
     /** @type {string | null} */
     this.invoker_permission = null;
+    Object.assign(this, optionAdders(this));
   }
   /** @param {string} name */ setName(name) { this.name = name; return this; }
   /** @param {string} d */ setDescription(d) { this.description = d; return this; }
@@ -107,18 +169,11 @@ export class SlashCommandBuilder {
    */
   setDefaultMemberPermissions(permission) { this.invoker_permission = permission; return this; }
 
-  /** @param {string} type @param {(o: OptionBuilder) => OptionBuilder} [fn] */
-  #add(type, fn) {
-    const option = new OptionBuilder(type);
-    this.options.push(fn ? fn(option) : option);
-    return this;
-  }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addStringOption(fn) { return this.#add(OptionType.String, fn); }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addIntegerOption(fn) { return this.#add(OptionType.Integer, fn); }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addBooleanOption(fn) { return this.#add(OptionType.Boolean, fn); }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addUserOption(fn) { return this.#add(OptionType.User, fn); }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addChannelOption(fn) { return this.#add(OptionType.Channel, fn); }
-  /** @param {(o: OptionBuilder) => OptionBuilder} fn */ addRoleOption(fn) { return this.#add(OptionType.Role, fn); }
+  /** @param {(s: SlashCommandSubcommandBuilder) => SlashCommandSubcommandBuilder} fn */
+  addSubcommand(fn) { const sub = new SlashCommandSubcommandBuilder(); this.options.push(fn ? fn(sub) : sub); return this; }
+  /** @param {(g: SlashCommandSubcommandGroupBuilder) => SlashCommandSubcommandGroupBuilder} fn */
+  addSubcommandGroup(fn) { const group = new SlashCommandSubcommandGroupBuilder(); this.options.push(fn ? fn(group) : group); return this; }
+
   toJSON() {
     return {
       name: this.name,
@@ -129,6 +184,20 @@ export class SlashCommandBuilder {
   }
 }
 
+/** One option (or subcommand, or group) → the API's shape, recursively. @param {any} o @returns {any} */
+function optionJSON(o) {
+  if (o.type === OptionType.Subcommand || o.type === OptionType.SubcommandGroup) {
+    return { name: o.name, description: o.description, type: o.type, options: (o.options ?? []).map(optionJSON) };
+  }
+  return {
+    name: o.name,
+    description: o.description,
+    type: o.type,
+    required: Boolean(o.required),
+    ...(o.choices ? { choices: o.choices.map((/** @type {any} */ c) => ({ name: c.name, value: c.value })) } : {}),
+  };
+}
+
 /** A builder or a plain command object → the body PUT /hubs/applications/@me/commands takes. @param {any} command */
 export function toCommandJSON(command) {
   const json = typeof command?.toJSON === "function" ? command.toJSON() : command;
@@ -136,13 +205,7 @@ export function toCommandJSON(command) {
     name: json.name,
     description: json.description,
     invoker_permission: json.invoker_permission ?? null,
-    options: (json.options ?? []).map((/** @type {any} */ o) => ({
-      name: o.name,
-      description: o.description,
-      type: o.type,
-      required: Boolean(o.required),
-      ...(o.choices ? { choices: o.choices.map((/** @type {any} */ c) => ({ name: c.name, value: c.value })) } : {}),
-    })),
+    options: (json.options ?? []).map(optionJSON),
   };
 }
 

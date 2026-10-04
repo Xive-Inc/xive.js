@@ -115,6 +115,8 @@ export const OptionType = Object.freeze({
   User: "user",
   Channel: "channel",
   Role: "role",
+  Subcommand: "subcommand",
+  SubcommandGroup: "subcommand_group",
 });
 
 /** The same palette discord.js exports as `Colors`, for `setColor`. */

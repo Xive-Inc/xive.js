@@ -396,3 +396,44 @@ test("presence: the client option is set before ready; setActivity, setStatus an
   ]);
   await client.destroy();
 });
+
+test("subcommands: register with addSubcommand/addSubcommandGroup, read with getSubcommand", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+
+  await client.application?.commands.set([
+    new SlashCommandBuilder().setName("mod").setDescription("Moderation")
+      .addSubcommand((s) => s.setName("ban").setDescription("Ban someone")
+        .addUserOption((o) => o.setName("target").setDescription("Who").setRequired(true)))
+      .addSubcommandGroup((g) => g.setName("role").setDescription("Roles")
+        .addSubcommand((s) => s.setName("add").setDescription("Add a role"))),
+  ]);
+  const put = calls.find((c) => c.method === "PUT" && c.path === "/hubs/applications/@me/commands");
+  assert.deepEqual(put?.body.commands[0].options, [
+    { name: "ban", description: "Ban someone", type: "subcommand", options: [
+      { name: "target", description: "Who", type: "user", required: true },
+    ] },
+    { name: "role", description: "Roles", type: "subcommand_group", options: [
+      { name: "add", description: "Add a role", type: "subcommand", options: [] },
+    ] },
+  ]);
+
+  /** @type {string[]} */
+  const seen = [];
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+    seen.push([interaction.commandName, interaction.options.getSubcommandGroup(), interaction.options.getSubcommand(false)].join("|"));
+  });
+  const run = (/** @type {string|null} */ sub, /** @type {string|null} */ group) => publish(client, "interaction.created", {
+    id: `ix-${sub}-${group}`, hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null,
+    command: { id: "cmd-mod", name: "mod" }, subcommand: sub, subcommand_group: group, options: [],
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(),
+  });
+  await run("ban", null);
+  await run("add", "role");
+  assert.deepEqual(seen, ["mod||ban", "mod|role|add"]);
+  await client.destroy();
+});

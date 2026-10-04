@@ -103,7 +103,7 @@ export class CommandInteraction extends BaseInteraction {
     super(client, hub, data);
     this.commandId = data.command.id;
     this.commandName = data.command.name;
-    this.options = new CommandOptions(this, data.options ?? []);
+    this.options = new CommandOptions(this, data.options ?? [], data.subcommand ?? null, data.subcommand_group ?? null);
   }
 
   /**
@@ -254,9 +254,14 @@ export function createInteraction(client, hub, data) {
 
 /** `interaction.options` — the values the member typed, by option name. */
 class CommandOptions {
-  /** @param {CommandInteraction} interaction @param {any[]} data */
-  constructor(interaction, data) {
+  /**
+   * @param {CommandInteraction} interaction @param {any[]} data
+   * @param {string | null} [subcommand] @param {string | null} [group]
+   */
+  constructor(interaction, data, subcommand = null, group = null) {
     this.interaction = interaction;
+    this.subcommand = subcommand;
+    this.subcommandGroup = group;
     /** @type {Collection<string, any>} */
     this.data = new Collection(data.map((o) => [o.name, o]));
   }
@@ -277,6 +282,22 @@ class CommandOptions {
     const option = this.data.get(name) ?? null;
     if (!option && required) throw new TypeError(`Required option "${name}" was not provided`);
     return option;
+  }
+
+  /**
+   * The subcommand the member ran — `"ban"` for `/mod ban`. Throws when there is none, unless
+   * `required` is false, as in discord.js.
+   * @param {boolean} [required] @returns {string | null}
+   */
+  getSubcommand(required = true) {
+    if (!this.subcommand && required) throw new TypeError("This command was run without a subcommand");
+    return this.subcommand;
+  }
+
+  /** The subcommand group — `"role"` for `/mod role add` — or null. @param {boolean} [required] @returns {string | null} */
+  getSubcommandGroup(required = false) {
+    if (!this.subcommandGroup && required) throw new TypeError("This command was run without a subcommand group");
+    return this.subcommandGroup;
   }
 
   /** @param {string} name @param {boolean} [required] @returns {string | null} */
