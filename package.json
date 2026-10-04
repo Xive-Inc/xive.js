@@ -20,12 +20,17 @@
   },
   "type": "module",
   "main": "src/index.js",
+  "types": "./types/index.d.ts",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    }
   },
   "files": [
     "src",
     "!src/**/*.test.js",
+    "types/index.d.ts",
     "NOTICE"
   ],
   "engines": {
@@ -35,7 +40,8 @@
     "centrifuge": "^5.7.0"
   },
   "scripts": {
-    "test": "node --test src/*.test.js"
+    "test": "node --test src/*.test.js",
+    "test:types": "npx -y -p typescript@5 -p @types/node@22 -c 'tsc -p test-d --typeRoots \"$(dirname \"$(command -v tsc)\")/../@types\"'"
   },
   "license": "Apache-2.0"
 }

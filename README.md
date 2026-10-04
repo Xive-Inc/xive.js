@@ -63,6 +63,30 @@ client.login(process.env.XIVE_TOKEN); // your application secret, xive_as_…
 `login()` connects out over the gateway, so the bot needs no public URL, and loads every hub that
 has installed it into `client.hubs`. You only receive events from channels your install can read.
 
+## TypeScript
+
+Types ship with the package, so there's nothing extra to install beyond `@types/node`. Event
+listeners are typed from the event name:
+
+```ts
+import { Client, Events } from "xive.js";
+
+const client = new Client();
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return; // narrows to CommandInteraction
+  const target = interaction.options.getUser("target", true); // User
+  await interaction.reply({ content: `Hi ${target}`, ephemeral: true });
+});
+
+client.on(Events.PresenceUpdate, (oldPresence, newPresence) => {
+  // oldPresence: Presence | null, newPresence: Presence
+});
+```
+
+`client.user` is `ClientUser | null` until `ready`. The client passed to the `ready` listener is
+a `Client<true>`, where it is never null.
+
 ## Porting a discord.js bot
 
 Change the import and the token, then rename the things below. The rest of the bot stays as it is.
@@ -285,6 +309,7 @@ Run the tests with:
 
 ```sh
 npm test
+npm run test:types   # type-checks test-d/ against types/index.d.ts
 ```
 
 ## Help
