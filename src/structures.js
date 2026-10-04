@@ -343,16 +343,17 @@ export function embedToContainer(e, translate) {
 /**
  * `<@id>`, `<@&id>` and `<#id>` tokens → Xive's plain `@username`, `@Role` and `#channel`, from
  * what is cached. Xive mentions are plain text; the tokens are accepted because bots written for
- * other platforms build them everywhere. A token whose target is not cached is left as written —
- * and the server rewrites it the same way (HubMentions::expandTokens), so it still pings.
+ * other platforms build them everywhere. A token whose target is not cached becomes Xive's own
+ * `<user:id>`, `<role:id>` or `<channel:id>`, which the server resolves (HubMentions::expandTokens),
+ * so it still pings.
  *
  * @param {Client} client @param {Hub | null} hub @param {string} content
  */
 export function translateMentions(client, hub, content) {
-  return content.replace(/<(@!?|@&|#)([0-9a-fA-F-]{8,})>/g, (whole, kind, id) => {
-    if (kind === "#") return client.channels.cache.get(id)?.toString() ?? whole;
-    if (kind === "@&") return hub?.roles.cache.get(id)?.toString() ?? whole;
-    return client.users.cache.get(id)?.toString() ?? whole;
+  return content.replace(/<(@!?|@&|#)([0-9a-fA-F-]{8,})>/g, (_whole, kind, id) => {
+    if (kind === "#") return client.channels.cache.get(id)?.toString() ?? `<channel:${id}>`;
+    if (kind === "@&") return hub?.roles.cache.get(id)?.toString() ?? `<role:${id}>`;
+    return client.users.cache.get(id)?.toString() ?? `<user:${id}>`;
   });
 }
 
