@@ -343,7 +343,8 @@ export function embedToContainer(e, translate) {
 /**
  * `<@id>`, `<@&id>` and `<#id>` tokens → Xive's plain `@username`, `@Role` and `#channel`, from
  * what is cached. Xive mentions are plain text; the tokens are accepted because bots written for
- * other platforms build them everywhere. A token whose target is not cached is left as written.
+ * other platforms build them everywhere. A token whose target is not cached is left as written —
+ * and the server rewrites it the same way (HubMentions::expandTokens), so it still pings.
  *
  * @param {Client} client @param {Hub | null} hub @param {string} content
  */
