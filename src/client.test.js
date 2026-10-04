@@ -13,6 +13,8 @@ const HUB = { id: "hub-1", slug: "test-hub", name: "Test Hub", description: null
 function fakeApi(t) {
   /** @type {{ method: string, path: string, body: any }[]} */
   const calls = [];
+  /** @type {Map<string, { deferred: boolean, ephemeral: boolean, replyId: string | null }>} */
+  const interactionState = new Map();
   const original = globalThis.fetch;
   globalThis.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init) => {
     const path = new URL(url).pathname;
@@ -31,6 +33,42 @@ function fakeApi(t) {
     if (path === "/hubs/hub-1/app/roles") return json({ roles: [{ id: "role-mod", name: "Moderator", color: "#ff0000", rank: 500, managed: false, permissions: ["mod_ban", "mod_kick"] }] });
     if (path === "/hubs/hub-1/app/channels/chan-1/messages" && method === "POST") {
       return json({ message: { id: "sent-1", channel_id: "chan-1", content: body.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
+    }
+    if (path.startsWith("/hubs/hub-1/app/interactions/")) {
+      // As the API answers: a public answer is the message, a private one `{ id }`,
+      // an edit `{ id, content }`. "ix-empty" answers with no message at all.
+      const [, , , , , ix, route] = path.split("/");
+      if (ix === "ix-empty") return json({ status: "replied" });
+      const state = interactionState.get(ix) ?? { deferred: false, ephemeral: false, replyId: null };
+      interactionState.set(ix, state);
+      const whole = (/** @type {string} */ id) => ({
+        id, channel_id: "chan-1", content: body.content ?? "", interaction: { id: ix },
+        author: { type: "application", application_id: APP.id, name: APP.name }, components: body.components ?? [], poll: null,
+      });
+      if (route === "callback") {
+        if (body.type === "defer" || body.type === "defer_update") {
+          Object.assign(state, { deferred: true, ephemeral: body.type === "defer" && Boolean(body.ephemeral) });
+          return json({ status: "deferred", ephemeral: state.ephemeral });
+        }
+        if (body.type === "reply") {
+          state.ephemeral = Boolean(body.ephemeral);
+          state.replyId = `reply-${ix}`;
+          return json({ status: "replied", ...(state.ephemeral ? { ephemeral: true, message: { id: `private-${ix}` } } : { ephemeral: false, message: whole(state.replyId) }) });
+        }
+        if (body.type === "update") return json({ status: "replied", ephemeral: false, message: { id: "sent-1", content: body.content ?? "" } });
+        return json({ status: body.type });
+      }
+      if (route === "original") {
+        if (state.ephemeral) return json({ status: "replied", ephemeral: true, message: { id: `private-${ix}` } });
+        if (state.deferred && !state.replyId) {
+          state.replyId = `reply-${ix}`;
+          return json({ status: "replied", ephemeral: false, message: whole(state.replyId) });
+        }
+        return json({ ephemeral: false, message: { id: state.replyId, content: body.content ?? "" } });
+      }
+      if (route === "followups") {
+        return json(body.ephemeral ? { ephemeral: true, message: { id: `private-followup-${ix}` } } : { ephemeral: false, message: whole(`followup-${ix}`) }, 201);
+      }
     }
     if (path.endsWith("/voters")) return json({ voters: [{ profile_id: "user-7", username: "kai", display_name: "Kai", avatar_url: null }] });
     if (path.endsWith("/poll/end")) return json({ poll: { ended: true, ended_at: "2026-10-04T13:00:00Z" } });
@@ -639,4 +677,195 @@ test("polls: PollData out, message.poll in, vote events, end() and fetchVoters()
   const voters = await poll.answers.get(1).fetchVoters({ limit: 10 });
   assert.ok(calls.find((c) => c.method === "GET" && c.path === `/hubs/hub-1/app/messages/${data.id}/poll/answers/1/voters`));
   assert.equal(voters.get("user-7")?.displayName, "Kai");
+});
+
+test("setColor: numbers, hex with and without #, [r, g, b], Colors names and Random; anything else throws", async () => {
+  const { Colors } = await import("./index.js");
+  const color = (/** @type {any} */ c) => new EmbedBuilder().setColor(c).data.color;
+  assert.equal(color(0x123456), 0x123456);
+  assert.equal(color("#ff0000"), 0xff0000);
+  assert.equal(color("00FF00"), 0x00ff00);
+  assert.equal(color([0, 0, 255]), 0x0000ff);
+  assert.equal(color("Red"), Colors.Red);
+  assert.equal(color("Blurple"), 0x5865f2);
+  assert.equal(color("Default"), 0);
+  for (let n = 0; n < 20; n++) {
+    const random = color("Random");
+    assert.ok(Number.isInteger(random) && random >= 0 && random <= 0xffffff, `Random gave ${random}`);
+  }
+  assert.equal(color(null), undefined, "null clears the colour");
+  for (const bad of ["NotAColour", "red", "#fff", "#gg0000", "", NaN, 1.5, [1, 2], [0, 0, 256], {}, true]) {
+    assert.throws(() => color(bad), TypeError, `${JSON.stringify(bad)} should be a TypeError`);
+  }
+  assert.throws(() => color(0x1000000), RangeError);
+  assert.throws(() => color(-1), RangeError);
+});
+
+test("message.mentions: users, roles and channels read from the stored text; has() agrees with them", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const { Member } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+  const thread = hub.channels.add({ id: "th-1", name: "bugs", kind: "thread" });
+  /** @type {any[]} */
+  const got = [];
+  client.on(Events.MessageCreate, (m) => got.push(m));
+
+  // What the server stored for `${sam} ${moderator} ${general} ${thread}`, plus things that are not mentions:
+  // an unknown name, an unresolved token (the server leaves those as written) and a link to a message.
+  const general = "https://hub.thexive.com/hub/test-hub/conversations/general";
+  await publish(client, "message.created", fromMember(
+    `hi @sam and @Moderator, see ${general} and #bugs — not @nobody, <user:c0901ae8-6771-4e9a-b40c-b6e72d3ca397> or ${general}?m=abc`,
+  ));
+  const msg = got.at(-1);
+  assert.deepEqual([...msg.mentions.users.keys()], ["user-1"]);
+  assert.equal(msg.mentions.users.get("user-1"), client.users.cache.get("user-1"), "users go through client.users");
+  assert.deepEqual([...msg.mentions.roles.keys()], ["role-mod"]);
+  assert.equal(msg.mentions.roles.get("role-mod"), hub.roles.cache.get("role-mod"));
+  assert.deepEqual([...msg.mentions.channels.keys()].sort(), ["chan-1", "th-1"]);
+  assert.equal(msg.mentions.channels.get("th-1"), thread);
+  assert.equal(msg.mentions.everyone, false);
+
+  // has() and the collections agree, by object or by id.
+  assert.ok(msg.mentions.has(client.users.cache.get("user-1")));
+  assert.ok(msg.mentions.has("role-mod"));
+  assert.ok(msg.mentions.has(hub.channels.cache.get("chan-1")));
+  assert.ok(!msg.mentions.has("user-2"));
+  // A member holding a mentioned role is mentioned, unless ignoreRoles — discord.js's rule.
+  const modOnly = new Member(client, hub, { profile_id: "user-9", username: "kai", role_ids: ["role-mod"] });
+  assert.ok(msg.mentions.has(modOnly));
+  assert.ok(!msg.mentions.has(modOnly, { ignoreRoles: true }));
+  // A user the caches had not seen is still found by name — and then appears in mentions.users.
+  const stranger = new User(client, { id: "user-8", username: "luna" });
+  await publish(client, "message.created", fromMember("ping @luna"));
+  const second = got.at(-1);
+  assert.equal(second.mentions.users.size, 0);
+  assert.ok(second.mentions.has(stranger));
+  assert.equal(second.mentions.users.get("user-8"), stranger);
+
+  // @everyone: has() is true for anyone unless ignoreEveryone; the collections stay what was named.
+  await publish(client, "message.created", fromMember("@everyone hello"));
+  const all = got.at(-1);
+  assert.equal(all.mentions.everyone, true);
+  assert.equal(all.mentions.users.size + all.mentions.roles.size + all.mentions.channels.size, 0);
+  assert.ok(all.mentions.has("anyone"));
+  assert.ok(!all.mentions.has("anyone", { ignoreEveryone: true }));
+  await client.destroy();
+});
+
+test("select-menu checks exist on every interaction: false on a command, true on the right component", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const { ComponentType } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  /** @type {any[]} */
+  const got = [];
+  client.on(Events.InteractionCreate, (i) => got.push(i));
+  const base = {
+    hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null,
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(),
+  };
+  await publish(client, "interaction.created", { ...base, id: "ix-cmd", command: { id: "cmd-1", name: "ping" }, options: [] });
+  await publish(client, "interaction.created", { ...base, id: "ix-ch", type: "component", custom_id: "where", component_type: ComponentType.ChannelSelect, values: ["chan-1"], message: { id: "sent-1" } });
+  await publish(client, "interaction.created", { ...base, id: "ix-btn", type: "component", custom_id: "go", component_type: ComponentType.Button, values: [], message: { id: "sent-1" } });
+  const checks = ["isUserSelectMenu", "isRoleSelectMenu", "isMentionableSelectMenu", "isChannelSelectMenu", "isAnySelectMenu"];
+  const [command, channelSelect, button] = got;
+  assert.deepEqual(checks.map((c) => command[c]()), [false, false, false, false, false]);
+  assert.deepEqual(checks.map((c) => channelSelect[c]()), [false, false, false, true, true]);
+  assert.deepEqual(checks.map((c) => button[c]()), [false, false, false, false, false]);
+  await client.destroy();
+});
+
+test("reply/followUp/editReply/update: Messages for public answers, { id } for private ones, null for none", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const channel = /** @type {any} */ (client.channels.cache.get("chan-1"));
+  /** @type {any[]} */
+  const got = [];
+  client.on(Events.InteractionCreate, (i) => got.push(i));
+  const command = async (/** @type {string} */ id) => {
+    await publish(client, "interaction.created", {
+      id, hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null, command: { id: "cmd-1", name: "ping" }, options: [],
+      user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+      created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(),
+    });
+    return got.at(-1);
+  };
+
+  // reply(): the API's JSON by default, as before …
+  let i = await command("ix-a");
+  const raw = await i.reply("Pong!");
+  assert.ok(!(raw instanceof Message));
+  assert.equal(raw.id, "reply-ix-a");
+  // … and followUp() a Message, built through the channel's manager like channel.send().
+  const follow = await i.followUp("More");
+  assert.ok(follow instanceof Message);
+  assert.equal(follow.id, "followup-ix-a");
+  assert.equal(follow.content, "More");
+  assert.equal(follow.author?.id, APP.id);
+  assert.equal(follow.author?.bot, true);
+  assert.equal(channel.messages.cache.get("followup-ix-a"), follow);
+  // A private follow-up is not a channel message: the raw { id }.
+  assert.deepEqual(await i.followUp({ content: "psst", ephemeral: true }), { id: "private-followup-ix-a" });
+  // editReply() after a reply edits it — and returns the Message, kept up to date.
+  const edited = await i.editReply("Pong! (edited)");
+  assert.ok(edited instanceof Message);
+  assert.equal(edited.id, "reply-ix-a");
+  assert.equal(edited.content, "Pong! (edited)");
+  assert.ok(edited.editedAt instanceof Date);
+
+  // reply({ fetchReply: true }) → the Message; a private one → { id }.
+  i = await command("ix-b");
+  const fetched = await i.reply({ content: "Fetched", fetchReply: true });
+  assert.ok(fetched instanceof Message);
+  assert.equal(fetched.content, "Fetched");
+  assert.equal(channel.messages.cache.get("reply-ix-b"), fetched);
+  assert.equal((await i.editReply("Changed")), fetched, "editing a cached reply updates that Message");
+  assert.equal(fetched.content, "Changed");
+  i = await command("ix-c");
+  assert.deepEqual(await i.reply({ content: "Secret", ephemeral: true, fetchReply: true }), { id: "private-ix-c" });
+  assert.deepEqual(await i.editReply("Still secret"), { id: "private-ix-c" });
+
+  // deferReply() → editReply() SENDS the answer: a whole Message.
+  i = await command("ix-d");
+  await i.deferReply();
+  const answer = await i.editReply("Done");
+  assert.ok(answer instanceof Message);
+  assert.equal(answer.id, "reply-ix-d");
+  assert.equal(answer.author?.id, APP.id);
+
+  // No message in the answer: null, not a throw.
+  i = await command("ix-empty");
+  assert.equal(await i.reply({ content: "x", fetchReply: true }), null);
+  assert.equal(await i.followUp("x"), null);
+  assert.equal(await i.editReply("x"), null);
+
+  // update(): the API's JSON, or with fetchReply the message the control is on, updated.
+  const source = channel.messages.add({ id: "sent-1", content: "Vote!", author: { type: "application", application_id: APP.id, name: APP.name } });
+  await publish(client, "interaction.created", {
+    id: "ix-up", type: "component", custom_id: "yes", component_type: 2, values: [], message: { id: "sent-1", content: "Vote!", components: [] },
+    hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null,
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(),
+  });
+  const press = got.at(-1);
+  assert.deepEqual(await press.update({ content: "Counted" }), { id: "sent-1", content: "Counted" });
+  const updated = await press.update({ content: "Counted again", components: [], fetchReply: true });
+  assert.equal(updated, source);
+  assert.equal(source.content, "Counted again");
+  assert.deepEqual(source.components, []);
+  await client.destroy();
+});
+
+test("ChannelSelectMenuBuilder.setDefaultChannels takes uuid strings", async () => {
+  const { ChannelSelectMenuBuilder } = await import("./index.js");
+  const id = "66666666-7777-4888-9999-000000000000";
+  assert.deepEqual(new ChannelSelectMenuBuilder().setDefaultChannels(id, [id]).toJSON().default_values,
+    [{ id, type: "channel" }, { id, type: "channel" }]);
 });

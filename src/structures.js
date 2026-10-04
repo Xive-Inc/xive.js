@@ -66,17 +66,86 @@ export class PermissionSet {
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * What a mention of `target` looks like in a STORED message. The server rewrites `<user:id>`,
- * `<role:id>` and `<channel:id>` into this before storing, so this, not `toString()`, is what a
- * received message's content contains. @param {any} target
+/* ── Mentions, as a received message stores them ────────────────────────────────────────────── */
+
+/*
+ * The server rewrites `<user:id>`, `<role:id>` and `<channel:id>` before storing — into `@username`,
+ * `@Role Name`, and the channel's link (`#name` for a thread) — and a message's JSON carries no
+ * list of who it mentioned. So a received message's mentions are read back out of that text,
+ * matched the way the server matched it, against what this process has cached. A token still in
+ * the text is one the server could NOT resolve (not a member, another hub's role…), so it is not a
+ * mention and is not read as one.
  */
-function storedMention(target) {
+
+/** What may not touch a mention on either side — the server's own boundary characters. */
+const EDGE = "A-Za-z0-9_.\\-";
+/** `@username`, as the server extracts it (HubMentions::USERNAME_RE). */
+const USERNAME_MENTION = /@([A-Za-z0-9_.\-]{2,32})/g;
+
+/** @param {string} text */
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Whether `label` (`@Name`, `#name`) stands alone in `content`. @param {string} content @param {string} label */
+function hasLabel(content, label) {
+  return new RegExp(`(?<![${EDGE}])${escapeRegExp(label)}(?![${EDGE}])`, "iu").test(content);
+}
+
+/** Whether a channel link stands alone in `content` — not the start of a longer path or a message link. @param {string} content @param {string} url */
+function hasLink(content, url) {
+  return new RegExp(`${escapeRegExp(url)}(?![A-Za-z0-9_.%~/?#\\-])`).test(content);
+}
+
+/** Whether `content` mentions `target` in its stored form. @param {string} content @param {any} target */
+function mentionsInText(content, target) {
   if (target instanceof Member) target = target.user;
-  if (target instanceof User) return `@${target.username}`;
-  if (target instanceof Role) return `@${target.name}`;
-  if (target instanceof Channel) return target.url ?? `#${target.name}`;
-  return `@${target}`;
+  if (target instanceof User) return !target.bot && hasLabel(content, `@${target.username}`);
+  if (target instanceof Role) return Boolean(target.name) && hasLabel(content, `@${target.name}`);
+  if (target instanceof Channel) return target.url ? hasLink(content, target.url) : hasLabel(content, `#${target.name}`);
+  return false;
+}
+
+/**
+ * The users, roles and channels `content` mentions, among those cached for `hub`.
+ * @param {Client | null} client @param {any} hub @param {string} content
+ */
+function readMentions(client, hub, content) {
+  /** @type {Collection<string, User>} */ const users = new Collection();
+  /** @type {Collection<string, Role>} */ const roles = new Collection();
+  /** @type {Collection<string, Channel>} */ const channels = new Collection();
+  if (!content) return { users, roles, channels };
+
+  if (content.includes("@")) {
+    // Roles: every cached name, longest first as the server scans. @everyone is `mentions.everyone`.
+    const everyoneRole = hub?.roles?.everyone ?? null;
+    const known = [...(hub?.roles?.cache?.values() ?? [])]
+      .filter((/** @type {Role} */ r) => r !== everyoneRole && r.name)
+      .sort((/** @type {Role} */ a, /** @type {Role} */ b) => b.name.length - a.name.length);
+    for (const role of known) if (hasLabel(content, `@${role.name}`)) roles.set(role.id, role);
+
+    // Users: the @-words, each looked up by username among this hub's members, then all cached users.
+    const names = new Set([...content.matchAll(USERNAME_MENTION)].map((m) => m[1].toLowerCase()));
+    names.delete("everyone");
+    names.delete("here");
+    if (names.size) {
+      /** @type {Map<string, User>} */
+      const byName = new Map();
+      for (const u of client?.users?.cache?.values() ?? []) if (!u.bot) byName.set(u.username.toLowerCase(), u);
+      for (const m of hub?.members?.cache?.values() ?? []) if (m.user && !m.user.bot) byName.set(m.user.username.toLowerCase(), m.user);
+      for (const name of names) {
+        const u = byName.get(name);
+        if (!u || users.has(u.id)) continue;
+        users.set(u.id, client?.users ? client.users.add({ id: u.id, username: u.username, name: u.globalName, avatar_url: u.avatar }) : u);
+      }
+    }
+  }
+
+  // Channels: a cached channel's link, or `#name` for one without a link (a thread).
+  for (const ch of hub?.channels?.cache?.values() ?? []) {
+    if (ch.url ? content.includes(ch.url) && hasLink(content, ch.url) : ch.name !== ch.id && hasLabel(content, `#${ch.name}`)) {
+      channels.set(ch.id, ch);
+    }
+  }
+  return { users, roles, channels };
 }
 
 export class User {
@@ -521,20 +590,49 @@ export class Message {
     }
 
     const content = this.content ?? "";
+    const everyone = /(^|\s)@(everyone|here)\b/.test(content);
+    const { users, roles, channels } = readMentions(client, channel.hub, content);
     this.mentions = {
-      everyone: /(^|\s)@(everyone|here)\b/.test(content),
-      users: new Collection(),
-      roles: new Collection(),
-      channels: new Collection(),
+      everyone,
+      /** The members mentioned by `@username`, among the users this process has cached. */
+      users,
+      /** The roles mentioned by `@Role Name`, from the hub's role cache. */
+      roles,
+      /** The channels mentioned by link (or `#name` for a thread), from the hub's channel cache. */
+      channels,
       /**
-       * Reads the text for the STORED form (`@username`, `@Role`, the channel's link) — not
-       * `toString()`, which is the `<user:id>` token the server rewrites on the way in.
-       * @param {any} target
+       * discord.js's `mentions.has()`: true for @everyone (unless `ignoreEveryone`), for anything
+       * in `users`, `roles` or `channels` (unless `ignoreDirect`), and for a member holding a
+       * mentioned role (unless `ignoreRoles`). A user, role or channel the caches did not know is
+       * still found by its stored form (`@username`, `@Role`, the channel's link) — and is then
+       * added to its collection, so the two never disagree.
+       *
+       * @param {any} target a User, Member, Role, Channel, or an id
+       * @param {{ ignoreDirect?: boolean, ignoreRoles?: boolean, ignoreEveryone?: boolean }} [options]
        */
-      has: (target) => {
+      has: (target, options = {}) => {
         if (!target) return false;
-        const label = storedMention(target);
-        return label.length > 1 && content.includes(label);
+        if (!options.ignoreEveryone && everyone) return true;
+        if (!options.ignoreDirect) {
+          if (typeof target === "string") {
+            if (users.has(target) || roles.has(target) || channels.has(target)) return true;
+          } else {
+            // The collection for the target's kind, so a role and a user never answer for each other.
+            const [list, value] = target instanceof Member ? [users, target.user]
+              : target instanceof User ? [users, target]
+                : target instanceof Role ? [roles, target]
+                  : target instanceof Channel ? [channels, target] : [null, null];
+            if (list?.has(target.id)) return true;
+            if (list && mentionsInText(content, target)) {
+              list.set(target.id, /** @type {any} */ (value));
+              return true;
+            }
+          }
+        }
+        if (!options.ignoreRoles && target instanceof Member) {
+          return target.roles.roleIds.some((/** @type {string} */ r) => roles.has(r));
+        }
+        return false;
       },
     };
   }

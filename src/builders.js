@@ -1,12 +1,33 @@
-import { OptionType } from "./constants.js";
+import { Colors, OptionType } from "./constants.js";
 
-/** @param {unknown} color a number, `#rrggbb`, or [r, g, b] */
+/**
+ * A colour as discord.js's `resolveColor` takes it: a number, `"#rrggbb"` or `"rrggbb"`, `[r, g, b]`,
+ * a name from `Colors` (`"Red"`, `"Blurple"`), or `"Random"`. `null`/`undefined` clear it. Anything
+ * else is a TypeError rather than a NaN that would reach the API; a number outside 0–0xffffff is a
+ * RangeError, as in discord.js.
+ *
+ * @param {unknown} color
+ * @returns {number | undefined}
+ */
 export function resolveColor(color) {
   if (color === null || color === undefined) return undefined;
-  if (typeof color === "number") return color;
-  if (Array.isArray(color)) return (color[0] << 16) + (color[1] << 8) + color[2];
-  if (typeof color === "string") return parseInt(color.replace(/^#/, ""), 16);
-  return undefined;
+  /** @type {number} */
+  let value;
+  if (typeof color === "number") {
+    value = color;
+  } else if (Array.isArray(color) && color.length === 3 && color.every((c) => Number.isInteger(c) && c >= 0 && c <= 255)) {
+    value = (color[0] << 16) + (color[1] << 8) + color[2];
+  } else if (typeof color === "string") {
+    if (color === "Random") return Math.floor(Math.random() * 0x1000000);
+    if (Object.prototype.hasOwnProperty.call(Colors, color)) return Colors[/** @type {keyof typeof Colors} */ (color)];
+    if (!/^#?[0-9a-f]{6}$/i.test(color)) throw new TypeError(`Unable to convert "${color}" to a colour: use a number, "#rrggbb", [r, g, b], a Colors name or "Random"`);
+    value = parseInt(color.replace(/^#/, ""), 16);
+  } else {
+    throw new TypeError(`Unable to convert ${JSON.stringify(color) ?? String(color)} to a colour: use a number, "#rrggbb", [r, g, b], a Colors name or "Random"`);
+  }
+  if (!Number.isInteger(value)) throw new TypeError(`Unable to convert ${String(color)} to a colour`);
+  if (value < 0 || value > 0xffffff) throw new RangeError("A colour must be between 0 and 0xffffff");
+  return value;
 }
 
 /**
@@ -301,7 +322,7 @@ export class MentionableSelectMenuBuilder extends AutoSelectMenuBuilder {
 }
 export class ChannelSelectMenuBuilder extends AutoSelectMenuBuilder {
   /** @param {Record<string, any>} [data] */ constructor(data) { super(8, data); }
-  /** @param {...number} ids */ setDefaultChannels(...ids) { return this.setDefaultValues(ids.flat().map((id) => ({ id, type: "channel" }))); }
+  /** @param {...string} ids channel ids (uuids) */ setDefaultChannels(...ids) { return this.setDefaultValues(ids.flat().map((id) => ({ id, type: "channel" }))); }
   /** Discord's numbers: 0 text, 2 voice, 13 stage (live rooms). @param {...number} types */
   setChannelTypes(...types) { this.data.channel_types = types.flat(); return this; }
 }

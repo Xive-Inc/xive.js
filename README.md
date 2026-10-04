@@ -120,7 +120,13 @@ A few things work differently:
 - **Mentions are `<user:id>`, `<role:id>` and `<channel:id>`**, and `${user}`, `${member}`,
   `${role}` and `${channel}` produce them. The server stores them as `@username`, `@Role` and the
   channel's link (a #channel pill for readers who can see it), so that is what received messages
-  contain. Discord's `<@id>`, `<@&id>` and `<#id>` are converted for you.
+  contain. Discord's `<@id>`, `<@&id>` and `<#id>` are converted for you. `message.mentions`
+  reads those stored forms back against what the client has cached — members and users it has
+  seen, the hub's roles and channels — so a mention of someone it has never seen is not in
+  `mentions.users`; `mentions.has(user)` still finds it by name.
+- **A private answer is not a message.** `followUp()` and `editReply()` resolve to a `Message`,
+  as in discord.js, but an ephemeral one resolves to `{ id }`. `reply()` resolves to the API's
+  JSON for the message unless you pass `fetchReply: true`.
 - **Embeds are sent as components.** Xive takes no embeds from an application, so each
   `EmbedBuilder` is sent as a Container that draws the same card (title, description, fields,
   thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with

@@ -6,6 +6,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelKind,
+  ChannelSelectMenuBuilder,
   Client,
   Collection,
   Colors,
@@ -26,6 +27,8 @@ import {
   verifySignature,
 } from "xive.js";
 import type {
+  APIEphemeralMessage,
+  APIMessage,
   AutocompleteInteraction,
   ButtonInteraction,
   Channel,
@@ -40,7 +43,9 @@ import type {
   ModalSubmitInteraction,
   PollAnswer,
   Presence,
+  Role,
   User,
+  UserSelectMenuInteraction,
 } from "xive.js";
 
 /** Compile-time equality check. */
@@ -80,8 +85,19 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.content === "!ping") await message.reply("Pong!");
 
   const embed = new EmbedBuilder().setTitle("Hi").setColor(Colors.Blue).setColor("#ff0000").setColor([1, 2, 3]).addFields({ name: "a", value: "b" });
-  // @ts-expect-error — colour names are not resolved
-  embed.setColor("Red");
+  // Colour names, "Random" and bare hex, as discord.js takes them.
+  embed.setColor("Red").setColor("Blurple").setColor("Random").setColor("ff0000").setColor(null);
+  // @ts-expect-error — not a colour name
+  embed.setColor("NotAColour");
+  // @ts-expect-error — names are case-sensitive, as in discord.js
+  embed.setColor("red");
+
+  // Mentions: collections of the real objects, and has() with discord.js's options.
+  expectType<Collection<string, User>>(message.mentions.users);
+  expectType<Collection<string, Role>>(message.mentions.roles);
+  expectType<Collection<string, Channel>>(message.mentions.channels);
+  if (message.member) expectType<boolean>(message.mentions.has(message.member, { ignoreEveryone: true, ignoreRoles: false }));
+  expectType<boolean>(message.mentions.has("some-id"));
   const sent = await message.channel.send({ content: "with file", embeds: [embed], files: [new AttachmentBuilder("./a.png", { name: "a.png" })] });
   expectType<Message>(sent);
   await message.channel.send({ files: [Buffer.from("x"), { attachment: "https://example.com/a.png", name: "a.png" }] });
@@ -223,14 +239,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
     expectType<Channel | null>(interaction.options.getChannel("where"));
 
     if (!interaction.memberPermissions.has(Permissions.BanMembers) || !interaction.memberPermissions.has("BanMembers")) return;
+    // Select-menu checks are callable on every interaction (false off a component).
+    expectType<boolean>(interaction.isAnySelectMenu());
     await interaction.deferReply({ ephemeral: false });
     await interaction.hub.members.ban(target.id, { reason: interaction.options.getString("reason") });
     const unbanned = await interaction.hub.members.unban(target, "appeal");
     expectType<User | null>(unbanned);
-    await interaction.editReply(`Banned ${target}`);
+    const edited = await interaction.editReply(`Banned ${target}`);
+    expectType<Message | APIEphemeralMessage>(edited);
+    if (edited instanceof Object && "channel" in edited) expectType<Message>(edited);
     // @ts-expect-error — editReply cannot carry a file
     await interaction.editReply({ files: ["./a.png"] });
-    await interaction.followUp({ content: "Logged.", ephemeral: true });
+    const logged = await interaction.followUp({ content: "Logged.", ephemeral: true });
+    assertType<Equals<typeof logged, APIEphemeralMessage>>();
+    const shown = await interaction.followUp("Shown to all");
+    assertType<Equals<typeof shown, Message>>();
+    // @ts-expect-error — a private follow-up is not a channel message
+    await (await interaction.followUp({ content: "x", ephemeral: true })).react("👍");
+    const either = await interaction.followUp({ content: "?", ephemeral: Math.random() > 0.5 });
+    assertType<Equals<typeof either, Message | APIEphemeralMessage>>();
     await interaction.followUp({ content: "Proof", files: [new AttachmentBuilder(Buffer.from("x"), { name: "log.txt" })] });
     await interaction.followUp({ poll: { question: "Again?", answers: ["Yes", "No"] } });
 
@@ -245,10 +272,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  if (interaction.isUserSelectMenu()) {
+    // Narrowed from the whole union, not only from MessageComponentInteraction.
+    expectType<UserSelectMenuInteraction>(interaction);
+    expectType<Collection<string, User>>(interaction.users);
+  }
+
   if (interaction.isButton()) {
     expectType<ButtonInteraction>(interaction);
     expectType<string>(interaction.customId);
-    await interaction.update({ components: [] });
+    const raw = await interaction.update({ components: [] });
+    assertType<Equals<typeof raw, APIMessage>>();
+    const updated = await interaction.update({ content: "Done", fetchReply: true });
+    assertType<Equals<typeof updated, Message | APIEphemeralMessage>>();
     return;
   }
 
@@ -263,11 +299,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.isModalSubmit()) {
     assertType<Equals<typeof interaction, ModalSubmitInteraction>>();
-    await interaction.reply({ content: "Thanks", ephemeral: true });
+    const answer = await interaction.reply({ content: "Thanks", ephemeral: true });
+    assertType<Equals<typeof answer, APIMessage>>();
+    const fetched = await interaction.reply({ content: "Thanks", fetchReply: true });
+    assertType<Equals<typeof fetched, Message>>();
+    const privately = await interaction.reply({ content: "Thanks", fetchReply: true, ephemeral: true });
+    assertType<Equals<typeof privately, APIEphemeralMessage>>();
   }
 
-  // @ts-expect-error — only component interactions have isUserSelectMenu()
-  interaction.isUserSelectMenu();
+  // On the whole union too, as in discord.js.
+  expectType<boolean>(interaction.isUserSelectMenu());
+  expectType<boolean>(interaction.isChannelSelectMenu());
+
+  // Channel ids are uuid strings.
+  new ChannelSelectMenuBuilder().setDefaultChannels("chan-id", "other-id");
+  // @ts-expect-error — not numbers
+  new ChannelSelectMenuBuilder().setDefaultChannels(1);
 });
 
 /* ── Hubs, members, roles ─────────────────────────────────────────────────────────────────── */

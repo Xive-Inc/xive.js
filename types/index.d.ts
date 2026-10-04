@@ -234,10 +234,18 @@ export interface APIModal {
   components: (APIActionRow | APIComponent)[];
   [key: string]: any;
 }
-/** A message as the API returns it — what interaction replies resolve to. */
+/**
+ * A message as the API returns it — what `reply()` and `update()` resolve to without
+ * `fetchReply`. A public reply's is the message's JSON; an edit's is `{ id, content }`; a private
+ * one's is `{ id }`.
+ */
 export interface APIMessage {
   id: string;
   [key: string]: any;
+}
+/** A private (ephemeral) answer: only its id. It is not a channel message, so never a Message. */
+export interface APIEphemeralMessage {
+  id: string;
 }
 /** A slash command as the API stores it. */
 export interface APIApplicationCommand {
@@ -285,8 +293,20 @@ export type AttachmentResolvable =
 
 /* ── Builders ──────────────────────────────────────────────────────────────────────────────── */
 
-/** A number, `#rrggbb`, or `[r, g, b]`. Colour names are not resolved — use `Colors.Red`. */
-export type ColorResolvable = number | `#${string}` | readonly [red: number, green: number, blue: number];
+/**
+ * A number, `"#rrggbb"` or `"rrggbb"`, `[r, g, b]`, a name from `Colors` (`"Red"`), or `"Random"` —
+ * what discord.js's `setColor` takes. Anything else throws a TypeError.
+ */
+export type ColorResolvable =
+  | number
+  | `#${string}`
+  | readonly [red: number, green: number, blue: number]
+  | `${HexDigit}${HexDigit}${string}`
+  | keyof typeof Colors
+  | "Random";
+/** One hex digit — enough of the type to tell bare `"ff0000"` from a misspelt colour name. */
+type HexDigit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+  | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F";
 
 export declare class EmbedBuilder {
   constructor(data?: APIEmbed);
@@ -569,10 +589,20 @@ export interface InteractionReplyOptions extends BaseMessageOptions {
   ephemeral?: boolean;
   files?: readonly AttachmentResolvable[];
   poll?: PollData | APIPollData;
+  /** `reply()` resolves to the Message (not the API's JSON), as in discord.js. */
+  fetchReply?: boolean;
 }
 
 export type InteractionEditReplyOptions = BaseMessageOptions;
-export type InteractionUpdateOptions = BaseMessageOptions;
+export interface InteractionUpdateOptions extends BaseMessageOptions {
+  /** `update()` resolves to the updated Message (not the API's JSON), as in discord.js. */
+  fetchReply?: boolean;
+}
+
+/** Options that make an answer private. */
+export type EphemeralReplyOptions = InteractionReplyOptions & { ephemeral: true };
+/** Options for an answer everyone in the channel sees. */
+export type PublicReplyOptions = InteractionReplyOptions & { ephemeral?: false };
 
 /* ── Permissions ───────────────────────────────────────────────────────────────────────────── */
 
@@ -743,8 +773,15 @@ export interface MessageMentions {
   users: Collection<string, User>;
   roles: Collection<string, Role>;
   channels: Collection<string, Channel>;
-  /** Whether the content mentions this user, member, role or channel. */
-  has(target: User | Member | Role | Channel | string | null | undefined): boolean;
+  /**
+   * discord.js's `has()`: true for @everyone (unless `ignoreEveryone`), for a user, role or
+   * channel the message mentions (unless `ignoreDirect`), and for a member holding a mentioned
+   * role (unless `ignoreRoles`). Takes an object or an id.
+   */
+  has(
+    target: User | Member | Role | Channel | string | null | undefined,
+    options?: { ignoreDirect?: boolean; ignoreRoles?: boolean; ignoreEveryone?: boolean },
+  ): boolean;
 }
 
 export interface MessageComponentCollectorOptions<T extends Interaction = MessageComponentInteraction> {
@@ -1048,6 +1085,11 @@ export declare class BaseInteraction {
   isMessageComponent(): this is MessageComponentInteraction;
   isButton(): this is ButtonInteraction;
   isStringSelectMenu(): this is StringSelectMenuInteraction;
+  isUserSelectMenu(): this is UserSelectMenuInteraction;
+  isRoleSelectMenu(): this is RoleSelectMenuInteraction;
+  isMentionableSelectMenu(): this is MentionableSelectMenuInteraction;
+  isChannelSelectMenu(): this is ChannelSelectMenuInteraction;
+  isAnySelectMenu(): this is AnySelectMenuInteraction;
   isModalSubmit(): this is ModalSubmitInteraction;
   isAutocomplete(): this is AutocompleteInteraction;
   isRepliable(): this is RepliableInteraction;
@@ -1056,14 +1098,26 @@ export declare class BaseInteraction {
   /** The request body for `options`. */
   body(options: string | InteractionReplyOptions): Record<string, unknown> & { ephemeral: boolean };
 
-  /** Answer with a new message. `ephemeral: true` shows it only to the member. */
+  /**
+   * Answer with a new message. `ephemeral: true` shows it only to the member. Resolves to the API's
+   * JSON for the message (`{ id }` for a private one); with `fetchReply: true`, to the Message —
+   * except a private reply, which is not a channel message.
+   */
+  reply(options: PublicReplyOptions & { fetchReply: true }): Promise<Message>;
+  reply(options: EphemeralReplyOptions & { fetchReply: true }): Promise<APIEphemeralMessage>;
+  reply(options: InteractionReplyOptions & { fetchReply: true }): Promise<Message | APIEphemeralMessage>;
   reply(options: string | InteractionReplyOptions): Promise<APIMessage>;
   /** Acknowledge now, answer later with `editReply()`. */
   deferReply(options?: { ephemeral?: boolean }): Promise<void>;
-  /** Send the answer after a defer, or change the one already sent. No files. */
-  editReply(options: string | InteractionEditReplyOptions): Promise<APIMessage>;
-  /** Another message after the first. */
-  followUp(options: string | InteractionReplyOptions): Promise<APIMessage>;
+  /**
+   * Send the answer after a defer, or change the one already sent. No files. Resolves to the
+   * Message, or `{ id }` when the answer is private (decided by the earlier reply or defer).
+   */
+  editReply(options: string | InteractionEditReplyOptions): Promise<Message | APIEphemeralMessage>;
+  /** Another message after the first. Resolves to the Message, or `{ id }` for a private one. */
+  followUp(options: EphemeralReplyOptions): Promise<APIEphemeralMessage>;
+  followUp(options: string | PublicReplyOptions): Promise<Message>;
+  followUp(options: string | InteractionReplyOptions): Promise<Message | APIEphemeralMessage>;
 }
 
 export interface CommandInteractionOption {
@@ -1136,7 +1190,11 @@ declare class MessageBoundInteraction extends BaseInteraction {
   customId: string;
   /** The message the control is on (a plain object for a private one), or null. */
   message: Message | EphemeralMessageData | null;
-  /** Rewrite the message the control is on. */
+  /**
+   * Rewrite the message the control is on. Resolves to the API's JSON (`{ id, content }`); with
+   * `fetchReply: true`, to the updated Message — or `{ id }` when that message is private.
+   */
+  update(options: InteractionUpdateOptions & { fetchReply: true }): Promise<Message | APIEphemeralMessage>;
   update(options: string | InteractionUpdateOptions): Promise<APIMessage>;
   /** Acknowledge without changing anything yet; `editReply()` then edits the message. */
   deferUpdate(): Promise<void>;

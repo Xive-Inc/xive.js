@@ -49,6 +49,11 @@ export class BaseInteraction {
   isMessageComponent() { return this.kind === "component"; }
   isButton() { return false; }
   isStringSelectMenu() { return false; }
+  isUserSelectMenu() { return false; }
+  isRoleSelectMenu() { return false; }
+  isMentionableSelectMenu() { return false; }
+  isChannelSelectMenu() { return false; }
+  isAnySelectMenu() { return false; }
   isModalSubmit() { return this.kind === "modal_submit"; }
   isAutocomplete() { return this.kind === "autocomplete"; }
   isRepliable() { return this.kind !== "autocomplete"; }
@@ -62,7 +67,43 @@ export class BaseInteraction {
   }
 
   /**
+   * The Message an answer produced, as discord.js resolves `followUp()` and `editReply()`: built
+   * through the channel's message manager, as `channel.send()` builds one. A private answer is not a
+   * channel message, so it stays the raw `{ id }` the API returned; no message at all is null.
+   *
+   * @param {any} result the route's JSON @param {Record<string, any>} body what was sent
+   * @param {boolean} edit whether the answer edited a message rather than sending one
+   */
+  _messageFrom(result, body, edit) {
+    const data = result?.message;
+    if (!data || typeof data !== "object" || !data.id) return null;
+    if (result.ephemeral) return data;
+    const channel = (data.channel_id && this.hub.channels.cache.get(data.channel_id)) || this.channel;
+    const cached = channel.messages.cache.get(data.id);
+    if (edit && cached) {
+      // An edit answers with `{ id, content }`; keep what the cache already knew.
+      if (data.content !== undefined) cached.content = data.content;
+      if (body.components !== undefined) cached.components = body.components;
+      cached.editedAt = new Date();
+      cached.editedTimestamp = cached.editedAt.getTime();
+      return cached;
+    }
+    const app = this.client.user;
+    return channel.messages.add({
+      author: app ? { type: "application", application_id: app.id, name: app.username } : undefined,
+      created_at: edit ? undefined : new Date().toISOString(),
+      edited_at: edit ? new Date().toISOString() : null,
+      components: body.components,
+      ...data,
+    });
+  }
+
+  /**
    * Answer with a new message. `ephemeral: true` shows it only to the member.
+   *
+   * Resolves to what the API answered — the message's JSON, or `{ id }` for a private reply — as
+   * discord.js resolves to an InteractionResponse. With `fetchReply: true` a public reply resolves
+   * to the Message instead, as in discord.js.
    * @param {any} options
    */
   async reply(options) {
@@ -71,7 +112,8 @@ export class BaseInteraction {
     const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "reply", ...body }, file);
     this.replied = true;
     this.ephemeral = body.ephemeral;
-    return result.message;
+    if (typeof options === "object" && options?.fetchReply) return this._messageFrom(result, body, false);
+    return result?.message ?? null;
   }
 
   /**
@@ -85,21 +127,29 @@ export class BaseInteraction {
     this.ephemeral = Boolean(options.ephemeral);
   }
 
-  /** Send the answer after a defer, or change the one already sent. @param {any} options */
+  /**
+   * Send the answer after a defer, or change the one already sent. Resolves to the Message, or to
+   * the raw `{ id }` when the answer is private. @param {any} options
+   */
   async editReply(options) {
     if (pickFile(options)) throw new XiveUnsupportedError("Files on editReply()", "use reply() or followUp() with the file");
     const { ephemeral: _ignored, ...body } = this.body(options);
     const result = await this.client.core.rest.patch(`${this.base}/original`, body);
     this.replied = true;
-    return result.message;
+    // After deferReply() this SENDS the answer (a whole message, with its author); otherwise it
+    // edits one, and the API answers `{ id, content }`.
+    return this._messageFrom(result, body, !result?.message?.author);
   }
 
-  /** Another message after the first. `ephemeral` per message. @param {any} options */
+  /**
+   * Another message after the first. `ephemeral` per message. Resolves to the Message, or to the
+   * raw `{ id }` for a private one. @param {any} options
+   */
   async followUp(options) {
     const body = this.body(options);
     const file = await this.#file(options, body.ephemeral);
     const result = await this.client.core.rest.post(`${this.base}/followups`, body, file);
-    return result.message;
+    return this._messageFrom(result, body, false);
   }
 
   /** The one file in `options.files`, resolved — not on a private reply, which cannot carry one. */
@@ -170,12 +220,17 @@ class MessageBoundInteraction extends BaseInteraction {
     }
   }
 
-  /** Rewrite the message the control is on — e.g. disable the buttons, show the result. @param {any} options */
+  /**
+   * Rewrite the message the control is on — e.g. disable the buttons, show the result. Resolves to
+   * what the API answered (`{ id, content }`, or `{ id }` for a private message); with
+   * `fetchReply: true`, to the updated Message, as in discord.js. @param {any} options
+   */
   async update(options) {
     const { ephemeral: _ignored, ...body } = this.body(options);
     const result = await this.client.core.rest.post(`${this.base}/callback`, { type: "update", ...body });
     this.replied = true;
-    return result.message;
+    if (typeof options === "object" && options?.fetchReply) return this._messageFrom(result, body, true);
+    return result?.message ?? null;
   }
 
   /** Acknowledge without changing anything yet; `editReply()` then edits the message. */
