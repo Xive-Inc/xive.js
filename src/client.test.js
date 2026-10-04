@@ -437,3 +437,39 @@ test("subcommands: register with addSubcommand/addSubcommandGroup, read with get
   assert.deepEqual(seen, ["mod||ban", "mod|role|add"]);
   await client.destroy();
 });
+
+test("user/role/channel selects: builders send discord.js JSON; picks arrive resolved", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const { ActionRowBuilder, UserSelectMenuBuilder, ChannelSelectMenuBuilder, ComponentType } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+
+  const hub = client.hubs.cache.get(HUB.id);
+  const channel = await hub?.channels.fetch("chan-1");
+  await channel?.send({ components: [
+    new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId("who").setMaxValues(2).setDefaultUsers("u-1")),
+    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId("where").setChannelTypes(0)),
+  ] });
+  const sent = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));
+  assert.deepEqual(sent?.body.components.map((/** @type {any} */ r) => r.components[0]), [
+    { type: 5, custom_id: "who", max_values: 2, default_values: [{ id: "u-1", type: "user" }] },
+    { type: 8, custom_id: "where", channel_types: [0] },
+  ]);
+
+  /** @type {any} */
+  let got = null;
+  client.on(Events.InteractionCreate, (i) => { if (i.isUserSelectMenu()) got = i; });
+  await publish(client, "interaction.created", {
+    id: "ix-sel", hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null, type: "component",
+    custom_id: "who", component_type: ComponentType.UserSelect, values: ["u-2"],
+    resolved: { users: { "u-2": { id: "u-2", username: "luna", display_name: "Luna" } }, members: { "u-2": { nick: "L" } } },
+    message: { id: "m-1", private: false, content: "", components: [] },
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 900000).toISOString(),
+  });
+  assert.equal(got?.isAnySelectMenu(), true);
+  assert.equal(got?.users.get("u-2")?.username, "luna");
+  assert.equal(got?.members.get("u-2")?.nick, "L");
+  await client.destroy();
+});

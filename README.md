@@ -102,8 +102,7 @@ A few things work differently:
   components or embeds becomes the Text Display above them, since Xive refuses content beside
   components. Text across the message is capped at 4000 characters.
 - **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
-  and unbanning from a bot.
-  Only string select menus exist; user, role and channel selects don't yet.
+  polls and stickers.
 - **Presence shows only while the bot is connected to the gateway.** An HTTP-only bot can set
   it, but it never appears. There is no `Streaming` activity type, and presence can change once
   every 4 seconds (the client waits out the limit for you).

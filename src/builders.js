@@ -260,6 +260,44 @@ export class StringSelectMenuBuilder {
   toJSON() { return { ...this.data, options: [...this.data.options] }; }
 }
 
+/**
+ * The selects Xive fills itself — members, roles, both, or channels. No options to add; the
+ * member picks from the hub. discord.js's builders, the same methods and JSON.
+ */
+class AutoSelectMenuBuilder {
+  /** @param {number} type @param {Record<string, any>} [data] */
+  constructor(type, data = {}) { this.data = /** @type {Record<string, any>} */ ({ type, ...data }); }
+  /** @param {string} id */ setCustomId(id) { this.data.custom_id = id; return this; }
+  /** @param {string} text */ setPlaceholder(text) { this.data.placeholder = text; return this; }
+  /** @param {number} n */ setMinValues(n) { this.data.min_values = n; return this; }
+  /** @param {number} n */ setMaxValues(n) { this.data.max_values = n; return this; }
+  /** @param {boolean} [disabled] */ setDisabled(disabled = true) { this.data.disabled = disabled; return this; }
+  /**
+   * Pre-select. `{ id, type }` where type is "user", "role" or "channel", as discord.js takes.
+   * @param {...({ id: string, type: string } | { id: string, type: string }[])} values
+   */
+  setDefaultValues(...values) { this.data.default_values = values.flat(); return this; }
+  toJSON() { return { ...this.data }; }
+}
+
+export class UserSelectMenuBuilder extends AutoSelectMenuBuilder {
+  /** @param {Record<string, any>} [data] */ constructor(data) { super(5, data); }
+  /** @param {...string} ids */ setDefaultUsers(...ids) { return this.setDefaultValues(ids.flat().map((id) => ({ id, type: "user" }))); }
+}
+export class RoleSelectMenuBuilder extends AutoSelectMenuBuilder {
+  /** @param {Record<string, any>} [data] */ constructor(data) { super(6, data); }
+  /** @param {...string} ids */ setDefaultRoles(...ids) { return this.setDefaultValues(ids.flat().map((id) => ({ id, type: "role" }))); }
+}
+export class MentionableSelectMenuBuilder extends AutoSelectMenuBuilder {
+  /** @param {Record<string, any>} [data] */ constructor(data) { super(7, data); }
+}
+export class ChannelSelectMenuBuilder extends AutoSelectMenuBuilder {
+  /** @param {Record<string, any>} [data] */ constructor(data) { super(8, data); }
+  /** @param {...number} ids */ setDefaultChannels(...ids) { return this.setDefaultValues(ids.flat().map((id) => ({ id, type: "channel" }))); }
+  /** Discord's numbers: 0 text, 2 voice, 13 stage (live rooms). @param {...number} types */
+  setChannelTypes(...types) { this.data.channel_types = types.flat(); return this; }
+}
+
 export class TextInputBuilder {
   /** @param {Record<string, any>} [data] */
   constructor(data = {}) { this.data = /** @type {Record<string, any>} */ ({ type: 4, ...data }); }

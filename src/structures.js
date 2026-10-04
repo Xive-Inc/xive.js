@@ -837,8 +837,14 @@ class MemberManager {
     await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/members/${enc(user instanceof Object ? user.id : user)}/ban`, { reason: options.reason });
   }
 
-  unban() {
-    return Promise.reject(new XiveUnsupportedError("Unbanning from an application", "a hub moderator lifts bans in Settings"));
+  /**
+   * Lift a ban. Needs `Permissions.BanMembers`. The person can rejoin; they are not put back.
+   * @param {string | Member | User} user @param {string} [reason]
+   */
+  async unban(user, reason) {
+    const id = user instanceof Object ? user.id : user;
+    await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/members/${enc(id)}/unban`, { reason });
+    return this.hub.client.users.cache.get(id) ?? null;
   }
 }
 

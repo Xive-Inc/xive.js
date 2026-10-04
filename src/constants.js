@@ -90,6 +90,10 @@ export const ComponentType = Object.freeze({
   Button: 2,
   StringSelect: 3,
   TextInput: 4,
+  UserSelect: 5,
+  RoleSelect: 6,
+  MentionableSelect: 7,
+  ChannelSelect: 8,
 });
 
 /** Button styles. `Link` opens `url` and is never sent to the bot. */

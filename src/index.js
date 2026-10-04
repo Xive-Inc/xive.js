@@ -3,7 +3,8 @@ export { Events, Permissions, ActivityType, ChannelKind, OptionType, Colors, Com
 export { Collection } from "./collection.js";
 export {
   EmbedBuilder, SlashCommandBuilder, SlashCommandSubcommandBuilder, SlashCommandSubcommandGroupBuilder, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder,
+  StringSelectMenuOptionBuilder, UserSelectMenuBuilder, RoleSelectMenuBuilder, MentionableSelectMenuBuilder,
+  ChannelSelectMenuBuilder, ModalBuilder, TextInputBuilder,
 } from "./builders.js";
 export { Hub, HubMe, Channel, Member, Role, User, ClientUser, Message, MessageReaction, PermissionSet } from "./structures.js";
 export {

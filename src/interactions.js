@@ -178,10 +178,29 @@ export class MessageComponentInteraction extends MessageBoundInteraction {
     this.componentType = data.component_type;
     /** The chosen values, for a select menu. Empty for a button. @type {string[]} */
     this.values = data.values ?? [];
+    const r = data.resolved ?? {};
+    /**
+     * For a user, role, mentionable or channel select: what was picked, by id — discord.js's
+     * `interaction.users`, `.members`, `.roles` and `.channels`. Empty for anything else.
+     */
+    this.users = new Collection(Object.entries(r.users ?? {}).map(([id, u]) =>
+      [id, client.users.add({ id, username: u.username ?? null, name: u.display_name ?? null })]));
+    /** @type {Collection<string, { nick: string | null }>} */
+    this.members = new Collection(Object.entries(r.members ?? {}).map(([id, m]) => [id, { nick: m?.nick ?? null }]));
+    /** @type {Collection<string, { id: string, name: string, color: string | null }>} */
+    this.roles = new Collection(Object.entries(r.roles ?? {}));
+    /** @type {Collection<string, { id: string, name: string, kind: string }>} */
+    this.channels = new Collection(Object.entries(r.channels ?? {}));
   }
 
   isButton() { return this.componentType === ComponentType.Button; }
   isStringSelectMenu() { return this.componentType === ComponentType.StringSelect; }
+  isUserSelectMenu() { return this.componentType === ComponentType.UserSelect; }
+  isRoleSelectMenu() { return this.componentType === ComponentType.RoleSelect; }
+  isMentionableSelectMenu() { return this.componentType === ComponentType.MentionableSelect; }
+  isChannelSelectMenu() { return this.componentType === ComponentType.ChannelSelect; }
+  /** Any select menu. */
+  isAnySelectMenu() { return this.componentType >= ComponentType.StringSelect && this.componentType !== ComponentType.TextInput; }
 
   /** @param {any} modal a ModalBuilder or its JSON */
   async showModal(modal) {
