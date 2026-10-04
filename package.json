@@ -25,7 +25,8 @@
   },
   "files": [
     "src",
-    "!src/**/*.test.js"
+    "!src/**/*.test.js",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=18"
@@ -36,5 +37,5 @@
   "scripts": {
     "test": "node --test src/*.test.js"
   },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

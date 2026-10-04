@@ -9,7 +9,7 @@
     <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/v/xive.js.svg?maxAge=3600" alt="npm version" /></a>
     <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/dt/xive.js.svg?maxAge=3600" alt="npm downloads" /></a>
     <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node 18+" />
-    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" />
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache 2.0 license" />
   </p>
 </div>
 
@@ -247,6 +247,12 @@ If you're stuck or something isn't behaving the way the docs say it should, star
 [developer docs](https://hub.thexive.com/developers/docs/intro) and the
 [status codes](https://hub.thexive.com/developers/docs/status-codes) page, then open an issue.
 
+## Acknowledgements
+
+xive.js follows the API design of [discord.js](https://discord.js.org), so a Discord bot ports with
+a few renames. Thanks to its maintainers. xive.js is its own code and is not affiliated with
+Discord or discord.js.
+
 ## License
 
-MIT
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Versions up to 0.1.1 were released under MIT.
