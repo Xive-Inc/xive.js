@@ -275,7 +275,11 @@ class HubManager {
   async fetch(id) {
     const core = /** @type {Connection} */ (this.client.core);
     for (const data of await core.hubs()) {
-      if (this.cache.has(data.id)) continue;
+      const known = this.cache.get(data.id);
+      if (known) {
+        known.me._patch(data);   // roles and permissions may have changed since
+        continue;
+      }
       const hub = new Hub(this.client, data);
       this.cache.set(hub.id, hub);
       await hub.channels.fetch();

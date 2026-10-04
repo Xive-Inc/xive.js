@@ -5,7 +5,7 @@ export {
   EmbedBuilder, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder,
 } from "./builders.js";
-export { Hub, Channel, Member, Role, User, ClientUser, Message, MessageReaction, PermissionSet } from "./structures.js";
+export { Hub, HubMe, Channel, Member, Role, User, ClientUser, Message, MessageReaction, PermissionSet } from "./structures.js";
 export {
   BaseInteraction, CommandInteraction, MessageComponentInteraction, ModalSubmitInteraction,
 } from "./interactions.js";

@@ -325,3 +325,42 @@ test("mentions: Xive tokens out, Discord tokens converted, has() reads the store
   assert.ok(msg.mentions.has(channel));
   assert.ok(!msg.mentions.has(new User(null, { id: rid, username: "sol" })));
 });
+
+test("hub.me: the app's own roles and permissions, refreshed by fetch()", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const entry = {
+    ...HUB,
+    role: { id: "role-app", name: "Modbot", rank: 101, permissions: ["conv_post"] },
+    roles: [{ id: "role-mod", name: "Moderator", rank: 500 }],
+    permissions: ["conv_view", "conv_post", "mod_ban", "mod_kick"],
+  };
+  const original = globalThis.fetch;
+  globalThis.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init) =>
+    new URL(url).pathname === "/hubs/applications/@me/hubs"
+      ? new Response(JSON.stringify({ success: true, hubs: [entry] }))
+      : original(url, init));
+  t.after(() => { globalThis.fetch = original; });
+
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+
+  assert.equal(hub.me.role.id, "role-app");
+  assert.equal(hub.me.role.managed, true);
+  assert.deepEqual([...hub.me.roles.keys()], ["role-mod", "role-app"], "highest first");
+  assert.equal(hub.me.highest.id, "role-mod");
+  assert.ok(hub.me.highest instanceof Role);
+  assert.equal(hub.me.highest.hexColor, "#ff0000", "uses the cached Role when hub.roles has it");
+  assert.ok(hub.me.permissions.has("BanMembers"));
+  assert.ok(!hub.me.permissions.has("ManageRoles"));
+
+  // The hub takes the extra role away; fetch() catches up.
+  entry.roles = [];
+  entry.permissions = ["conv_view", "conv_post"];
+  await hub.me.fetch();
+  assert.deepEqual([...hub.me.roles.keys()], ["role-app"]);
+  assert.ok(!hub.me.permissions.has("BanMembers"));
+
+  await client.destroy();
+});

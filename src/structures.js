@@ -819,6 +819,66 @@ class RoleManager {
   }
 }
 
+/**
+ * `hub.me` — the application itself in this hub: the roles it holds and what they let it do.
+ * discord.js's `guild.members.me`, without the member: an application is not one.
+ *
+ * `role` is the role made when the hub installed the app; `roles` adds any others the hub gave it.
+ * `permissions` is the app's hub-wide permissions from all of them (and @everyone) — exactly what
+ * the API checks. Channel overwrites can narrow it; answering an interaction ignores them.
+ * Loaded at login; call `fetch()` after the hub changes the app's roles.
+ */
+export class HubMe {
+  /** @param {Hub} hub @param {any} data an entry of GET /hubs/applications/@me/hubs */
+  constructor(hub, data) {
+    this.hub = hub;
+    this._patch(data);
+  }
+
+  /** @param {any} data */
+  _patch(data) {
+    /** @type {any} */
+    this._role = data.role ?? null;
+    /** @type {any[]} */
+    this._extra = Array.isArray(data.roles) ? data.roles : [];
+    // Older servers did not send `permissions`; the install role's own keys are the best guess.
+    this.permissions = new PermissionSet(data.permissions ?? data.role?.permissions ?? []);
+  }
+
+  /** @param {any} r */
+  #resolve(r) {
+    return this.hub.roles.cache.get(r.id) ?? new Role(this.hub.client, this.hub, r);
+  }
+
+  /** The role made when the hub installed the app. */
+  get role() {
+    return this._role ? this.#resolve({ ...this._role, managed: true }) : null;
+  }
+
+  /** Every role the app holds — its install role and any others — highest first. */
+  get roles() {
+    const all = new Collection();
+    for (const r of [...(this._role ? [{ ...this._role, managed: true }] : []), ...this._extra]) {
+      const role = this.#resolve(r);
+      all.set(role.id, role);
+    }
+    return all.sort((a, b) => b.position - a.position);
+  }
+
+  /** The app's highest role — what decides which roles and members it can manage. */
+  get highest() {
+    return this.roles.first() ?? null;
+  }
+
+  /** Re-read the app's roles and permissions in this hub. */
+  async fetch() {
+    const core = /** @type {any} */ (this.hub.client.core);
+    const data = (await core.hubs()).find((/** @type {any} */ h) => h.id === this.hub.id);
+    if (data) this._patch(data);
+    return this;
+  }
+}
+
 export class Hub {
   /** @param {Client} client @param {any} data an entry of GET /hubs/applications/@me/hubs */
   constructor(client, data) {
@@ -832,6 +892,8 @@ export class Hub {
     this.channels = new ChannelManager(this);
     this.members = new MemberManager(this);
     this.roles = new RoleManager(this);
+    /** The application in this hub — its roles and permissions. */
+    this.me = new HubMe(this, data);
   }
 
   toString() { return this.name; }
