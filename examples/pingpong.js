@@ -1,6 +1,5 @@
 // A ping-pong test bot: one chat command and three slash commands, covering every reply path.
 //
-//   cd /opt/xive-hub/packages/xive.js
 //   XIVE_TOKEN=xive_as_… node examples/pingpong.js
 //
 // What to try in a hub that has installed the app:

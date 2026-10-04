@@ -1,10 +1,49 @@
-# xive.js
+<div align="center">
+  <br />
+  <p>
+    <a href="https://hub.thexive.com/developers"><img src="https://hub.thexive.com/brand/xive-hub-512.png" width="128" alt="Xive" /></a>
+  </p>
+  <h1>xive.js</h1>
+  <p><b>Build bots for Xive hubs.</b></p>
+  <p>
+    <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/v/xive.js.svg?maxAge=3600" alt="npm version" /></a>
+    <a href="https://www.npmjs.com/package/xive.js"><img src="https://img.shields.io/npm/dt/xive.js.svg?maxAge=3600" alt="npm downloads" /></a>
+    <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node 18+" />
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" />
+  </p>
+</div>
 
-Build bots for Xive hubs. Node 18+.
+## About
+
+xive.js is a Node.js library for building bots on [Xive](https://thexive.com). It covers
+the whole bot API:
+
+- **The gateway and its events**, with no public URL needed. Signed HTTP delivery is there for
+  serverless hosts.
+- **An object model with caches.** Bots work with hubs, channels, members, roles and messages.
+- **Slash commands, buttons, select menus and forms**, built with the same builders as
+  discord.js.
+- **A thin REST client** for anything below the object model.
 
 If you've written a discord.js bot, you already know this API. The patterns are the same:
 `client.on(Events.MessageCreate)`, `message.reply()`, `member.timeout()`, `EmbedBuilder` and
-`SlashCommandBuilder`. Xive's own words are used where the concepts differ.
+`SlashCommandBuilder`. Xive's own words are used where the concepts differ, so most bots port
+with [a handful of renames](#porting-a-discordjs-bot).
+
+## Installation
+
+**Node.js 18 or newer is required.**
+
+```sh
+npm install xive.js
+yarn add xive.js
+pnpm add xive.js
+```
+
+You'll need an application from the [Developer Portal](https://hub.thexive.com/developers). Its
+application secret (`xive_as_…`) is your bot token.
+
+## Example usage
 
 ```js
 import { Client, Events, EmbedBuilder } from "xive.js";
@@ -38,6 +77,7 @@ Change the import and the token, then rename the things below. The rest of the b
 | `Events.GuildMemberAdd` / `Remove` / `Update` | `Events.MemberAdd` / `MemberRemove` / `MemberUpdate` |
 | `Events.GuildBanAdd` / `Remove`, `Events.GuildCreate` | `Events.BanAdd` / `BanRemove`, `Events.HubCreate` |
 | `PermissionFlagsBits.BanMembers` | `Permissions.BanMembers` |
+| `guild.members.me.roles.cache`, `.roles.highest`, `.permissions` | `hub.me.roles`, `hub.me.highest`, `hub.me.permissions`. An app isn't a member; call `hub.me.fetch()` after its roles change |
 | `channel.type === ChannelType.GuildText` | `channel.kind === ChannelKind.Text` |
 | `new REST().put(Routes.applicationCommands(id), { body })` | `client.application.commands.set(commands)` |
 
@@ -146,3 +186,46 @@ way, and an event that arrives over both routes is only handled once.
 
 `Connection` gives you raw REST, the gateway and the HTTP receiver without the object model. It
 emits `event(event, envelope)`. `REST` and `verifySignature` are exported too.
+
+## Links
+
+- [Developer Portal](https://hub.thexive.com/developers)
+- [Developer docs](https://hub.thexive.com/developers/docs/intro)
+- [Quick start](https://hub.thexive.com/developers/docs/quick-start)
+- [API reference](https://hub.thexive.com/developers/docs/reference)
+- [Change log](https://hub.thexive.com/developers/docs/changelog)
+- [npm](https://www.npmjs.com/package/xive.js)
+
+## Examples
+
+[`examples/`](examples) has runnable bots:
+
+- [`ping-bot.js`](examples/ping-bot.js) is the smallest working bot.
+- [`pingpong.js`](examples/pingpong.js) covers every reply path: chat commands, public and
+  private slash replies, deferred replies, buttons, menus and forms.
+- [`register.js`](examples/register.js) registers your HTTP delivery URL.
+
+```sh
+XIVE_TOKEN=xive_as_… node examples/pingpong.js
+```
+
+## Contributing
+
+Before opening an issue or a pull request, check the [docs](https://hub.thexive.com/developers/docs/intro)
+and the existing issues to see whether it's already covered.
+
+Run the tests with:
+
+```sh
+npm test
+```
+
+## Help
+
+If you're stuck or something isn't behaving the way the docs say it should, start with the
+[developer docs](https://hub.thexive.com/developers/docs/intro) and the
+[status codes](https://hub.thexive.com/developers/docs/status-codes) page, then open an issue.
+
+## License
+
+MIT
