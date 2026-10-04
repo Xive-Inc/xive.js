@@ -76,7 +76,14 @@ class OptionBuilder {
     this.required = false;
     /** @type {{ name: string, value: string | number }[] | undefined} */
     this.choices = undefined;
+    this.autocomplete = false;
   }
+  /**
+   * Suggest values as the member types — you receive an autocomplete interaction and `respond()`.
+   * String and integer options only, and not with `addChoices`.
+   * @param {boolean} [autocomplete]
+   */
+  setAutocomplete(autocomplete = true) { this.autocomplete = autocomplete; return this; }
   /** @param {string} name */ setName(name) { this.name = name; return this; }
   /** @param {string} d */ setDescription(d) { this.description = d; return this; }
   /** @param {boolean} [r] */ setRequired(r = true) { this.required = r; return this; }
@@ -85,7 +92,7 @@ class OptionBuilder {
   /** @param {...({ name: string, value: string | number } | { name: string, value: string | number }[])} choices */
   setChoices(...choices) { this.choices = choices.flat(); return this; }
   toJSON() {
-    return { type: this.type, name: this.name, description: this.description, required: this.required, choices: this.choices };
+    return { type: this.type, name: this.name, description: this.description, required: this.required, choices: this.choices, autocomplete: this.autocomplete };
   }
 }
 
@@ -195,6 +202,7 @@ function optionJSON(o) {
     type: o.type,
     required: Boolean(o.required),
     ...(o.choices ? { choices: o.choices.map((/** @type {any} */ c) => ({ name: c.name, value: c.value })) } : {}),
+    ...(o.autocomplete ? { autocomplete: true } : {}),
   };
 }
 

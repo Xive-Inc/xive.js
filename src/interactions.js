@@ -50,7 +50,8 @@ export class BaseInteraction {
   isButton() { return false; }
   isStringSelectMenu() { return false; }
   isModalSubmit() { return this.kind === "modal_submit"; }
-  isRepliable() { return true; }
+  isAutocomplete() { return this.kind === "autocomplete"; }
+  isRepliable() { return this.kind !== "autocomplete"; }
 
   get base() { return `/hubs/${enc(this.hubId)}/app/interactions/${enc(this.id)}`; }
 
@@ -280,9 +281,44 @@ function awaitModalFrom(origin, options) {
 
 /** Build the right class for an `interaction.created` event. @param {Client} client @param {Hub} hub @param {any} data */
 export function createInteraction(client, hub, data) {
+  if (data.type === "autocomplete") return new AutocompleteInteraction(client, hub, data);
   if (data.type === "component") return new MessageComponentInteraction(client, hub, data);
   if (data.type === "modal_submit") return new ModalSubmitInteraction(client, hub, data);
   return new CommandInteraction(client, hub, data);
+}
+
+/**
+ * A member is typing into an option you marked `setAutocomplete(true)` — answer with suggestions.
+ * Exactly discord.js's shape: `interaction.options.getFocused()`, then `respond(choices)`.
+ *
+ * ```js
+ * if (interaction.isAutocomplete()) {
+ *   const typed = interaction.options.getFocused();
+ *   await interaction.respond(fruits.filter((f) => f.startsWith(typed)).slice(0, 25).map((f) => ({ name: f, value: f })));
+ * }
+ * ```
+ *
+ * Values are what has been TYPED so far — strings, even for an integer option. Answer within a
+ * few seconds or the suggestions are dropped; there is nothing else to send.
+ */
+export class AutocompleteInteraction extends BaseInteraction {
+  /** @param {Client} client @param {Hub} hub @param {any} data */
+  constructor(client, hub, data) {
+    super(client, hub, data);
+    this.commandId = data.command.id;
+    this.commandName = data.command.name;
+    this.options = new CommandOptions(this, data.options ?? [], data.subcommand ?? null, data.subcommand_group ?? null);
+    this.responded = false;
+  }
+
+  /** @param {{ name: string, value: string | number }[]} choices up to 25 */
+  async respond(choices) {
+    await this.client.core.rest.post(`${this.base}/callback`, {
+      type: "autocomplete",
+      choices: choices.map((c) => ({ name: c.name, value: c.value })),
+    });
+    this.responded = true;
+  }
 }
 
 /** `interaction.options` — the values the member typed, by option name. */
@@ -308,6 +344,17 @@ class CommandOptions {
     }
     if (option.type !== type) throw new TypeError(`Option "${name}" is a ${option.type}, not a ${type}`);
     return option;
+  }
+
+  /**
+   * Autocomplete only: what the member is typing into the focused option — or, with `getFull`,
+   * `{ name, type, value }`.
+   * @param {boolean} [getFull]
+   */
+  getFocused(getFull = false) {
+    const focused = this.data.find((o) => o.focused) ?? null;
+    if (getFull) return focused;
+    return focused?.value ?? "";
   }
 
   /** The raw `{ name, type, value, resolved? }`. @param {string} name @param {boolean} [required] */

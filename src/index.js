@@ -8,7 +8,7 @@ export {
 } from "./builders.js";
 export { Hub, HubMe, Channel, Member, Role, User, ClientUser, Presence, Message, MessageReaction, PermissionSet } from "./structures.js";
 export {
-  BaseInteraction, CommandInteraction, MessageComponentInteraction, ModalSubmitInteraction,
+  BaseInteraction, CommandInteraction, MessageComponentInteraction, ModalSubmitInteraction, AutocompleteInteraction,
 } from "./interactions.js";
 export { InteractionCollector } from "./collector.js";
 export { XiveAPIError, XiveUnsupportedError } from "./errors.js";

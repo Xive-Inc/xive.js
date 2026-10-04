@@ -530,3 +530,33 @@ test("files: one file goes as multipart with payload_json; buffers, builders and
   ]);
   await client.destroy();
 });
+
+test("autocomplete: setAutocomplete registers it; getFocused + respond answer it", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+
+  await client.application?.commands.set([
+    new SlashCommandBuilder().setName("fruit").setDescription("Pick a fruit")
+      .addStringOption((o) => o.setName("name").setDescription("Which").setRequired(true).setAutocomplete(true)),
+  ]);
+  const put = calls.find((c) => c.method === "PUT" && c.path === "/hubs/applications/@me/commands");
+  assert.equal(put?.body.commands[0].options[0].autocomplete, true);
+
+  client.on(Events.InteractionCreate, async (i) => {
+    if (!i.isAutocomplete()) return;
+    const typed = i.options.getFocused();
+    await i.respond(["apple", "apricot", "banana"].filter((f) => f.startsWith(typed)).map((f) => ({ name: f, value: f })));
+  });
+  await publish(client, "interaction.created", {
+    id: "ac-1", type: "autocomplete", hub_id: HUB.id, channel_id: "chan-1", parent_channel_id: null,
+    command: { id: "cmd-fruit", name: "fruit" }, subcommand: null, subcommand_group: null,
+    options: [{ name: "name", type: "string", value: "ap", focused: true }],
+    user: { type: "member", profile_id: "user-1", username: "sam", name: "Sam", permissions: [], role_ids: [] },
+    created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 15000).toISOString(),
+  });
+  const cb = calls.find((c) => c.path === "/hubs/hub-1/app/interactions/ac-1/callback");
+  assert.deepEqual(cb?.body, { type: "autocomplete", choices: [{ name: "apple", value: "apple" }, { name: "apricot", value: "apricot" }] });
+  await client.destroy();
+});

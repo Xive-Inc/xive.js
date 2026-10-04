@@ -164,6 +164,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
 - **Option getters:** `getString`, `getInteger`, `getBoolean`, `getUser`, `getMember`,
   `getChannel` and `getRole`.
 
+### Autocomplete
+
+```js
+new SlashCommandBuilder().setName("fruit").setDescription("Pick a fruit")
+  .addStringOption((o) => o.setName("name").setDescription("Which").setRequired(true).setAutocomplete(true));
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isAutocomplete()) return;
+  const typed = interaction.options.getFocused();
+  await interaction.respond(fruits.filter((f) => f.startsWith(typed)).slice(0, 25).map((f) => ({ name: f, value: f })));
+});
+```
+
 ## Buttons, menus and forms
 
 Components use the same builders and JSON as discord.js:
