@@ -38,7 +38,7 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   if (message.content.trim().toLowerCase() === "!ping") {
-    console.log(`!ping from ${message.author.username} in ${message.hub.name} ${message.channel}`);
+    console.log(`!ping from ${message.author.username} in ${message.hub.name} #${message.channel.name}`);
     await message.reply("Pong! 🏓");
   }
 });

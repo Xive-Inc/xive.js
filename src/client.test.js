@@ -23,7 +23,7 @@ function fakeApi(t) {
     if (path === "/hubs/applications/@me") return json({ application: APP });
     if (path === "/hubs/applications/@me/hubs") return json({ hubs: [HUB] });
     if (path === "/hubs/applications/@me/commands") return json({ commands: body?.commands ?? [] });
-    if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", kind: "conversation", topic: null, category_id: null }] });
+    if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
     if (path === "/hubs/hub-1/app/roles") return json({ roles: [{ id: "role-mod", name: "Moderator", color: "#ff0000", rank: 500, managed: false, permissions: ["mod_ban", "mod_kick"] }] });
     if (path === "/hubs/hub-1/app/channels/chan-1/messages" && method === "POST") {
       return json({ message: { id: "sent-1", channel_id: "chan-1", content: body.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
@@ -89,7 +89,7 @@ test("a discord.js-style bot, ported: ready, !ping, embeds, moderation, reaction
   // ──────────────────────────────────────────────────────────────────────────────────────────
 
   assert.deepEqual(log, ["ready as Modbot in 1 hub(s)"]);
-  assert.equal(client.channels.cache.get("chan-1")?.toString(), "#general");
+  assert.equal(client.channels.cache.get("chan-1")?.toString(), "https://hub.thexive.com/hub/test-hub/conversations/general");
 
   await publish(client, "message.created", fromMember("!ping"));
   let post = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));

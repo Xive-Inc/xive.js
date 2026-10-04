@@ -3,6 +3,17 @@ import { ChannelKind, Permissions } from "./constants.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
 
+/** Where the app is served — the host a channel link must name for the app to recognise it. */
+const APP_ORIGIN = "https://hub.thexive.com";
+
+/** A channel kind → the app's `/hub/{slug}/{section}/{channel}` section. Threads have no address. */
+const CHANNEL_SECTIONS = {
+  [ChannelKind.Text]: "conversations",
+  announcement: "conversations",
+  [ChannelKind.LiveRoom]: "voice",
+  [ChannelKind.RolePicker]: "roles",
+};
+
 /**
  * The objects a bot works with — Hub, Channel, Member, Role, User, Message — over the Xive app
  * API. Shaped like discord.js's so a bot written against one reads naturally against the other.
@@ -345,7 +356,8 @@ export class Message {
     };
   }
 
-  get url() { return `https://hub.thexive.com/hubs/${this.hubId}/channels/${this.channelId}?message=${this.id}`; }
+  /** Opens the channel at this message (`?m=`, which the app reads), or null when the channel has no url. */
+  get url() { return this.channel.url ? `${this.channel.url}?m=${encodeURIComponent(this.id)}` : null; }
   get editable() { return this.author?.id === this.client.user?.id; }
   get deletable() { return true; }
   get pinnable() { return true; }
@@ -504,6 +516,7 @@ export class Channel {
     this.hubId = hub.id;
     this.id = data.id;
     this.name = data.name ?? data.id;
+    this.slug = data.slug ?? null;
     this.topic = data.topic ?? null;
     this.parentId = data.category_id ?? null;
     /** One of ChannelKind. */
@@ -525,7 +538,19 @@ export class Channel {
   isTextBased() { return this.kind !== ChannelKind.RolePicker; }
   isThread() { return this.kind === ChannelKind.Thread; }
   isVoiceBased() { return this.kind === ChannelKind.LiveRoom; }
-  toString() { return `#${this.name}`; }
+  /**
+   * The channel's address in the app, or null for one that has none (a thread, or a hub or
+   * channel the cache knows only by id). Posted in a message, a reader who can see the channel
+   * gets it drawn as a #channel pill — the way a member's pasted channel link is.
+   */
+  get url() {
+    const section = CHANNEL_SECTIONS[this.kind];
+    if (!section || !this.slug || !this.hub.slug) return null;
+    return `${APP_ORIGIN}/hub/${encodeURIComponent(this.hub.slug)}/${section}/${encodeURIComponent(this.slug)}`;
+  }
+
+  /** `${channel}` in a message mentions it: its link where it has one, `#name` otherwise. */
+  toString() { return this.url ?? `#${this.name}`; }
 
   /** @param {any} options */
   async send(options) {
@@ -585,7 +610,14 @@ class ChannelManager {
   /** @param {any} data */
   add(data) {
     const existing = this.cache.get(data.id);
-    if (existing) return existing;
+    if (existing) {
+      // An event caches a channel by id alone; the full row from fetch() fills in what it lacked,
+      // or `${channel}` would stay a bare id with no link for the life of the process.
+      if (data.slug && !existing.slug) existing.slug = data.slug;
+      if (data.name && existing.name === existing.id) existing.name = data.name;
+      if (data.kind) existing.kind = data.kind;
+      return existing;
+    }
     const channel = new Channel(this.hub.client, this.hub, data);
     this.cache.set(channel.id, channel);
     this.hub.client.channels.cache.set(channel.id, channel);

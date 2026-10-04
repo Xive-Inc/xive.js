@@ -51,8 +51,9 @@ Unchanged: `messageCreate` / `Update` / `Delete`, `messageReactionAdd` / `Remove
 A few things work differently:
 
 - **Ids are uuids.** They're still strings, but you can't parse them as numbers.
-- **Mentions are plain text** (`@username`, `@Role`, `#channel`). `${user}` and `${channel}`
-  mention them. `<@id>`-style tokens are converted when the target is cached.
+- **Mentions are plain text** (`@username`, `@Role`). `${user}` and `${role}` mention them.
+  `${channel}` is the channel's link (`channel.url`), which readers who can see it get as a
+  #channel pill. `<@id>`, `<@&id>` and `<#id>` tokens are converted when the target is cached.
 - **Things Xive doesn't have throw `XiveUnsupportedError` at the call:** DMs, file uploads,
   and unbanning from a bot. Subcommands aren't supported; register each one as its own command.
   Only string select menus exist; user, role and channel selects don't yet.

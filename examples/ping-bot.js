@@ -13,7 +13,7 @@ client.once(Events.ClientReady, (c) => {
 
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
-  console.log(`[${message.hub.name} ${message.channel}] ${message.author.username}: ${message.content}`);
+  console.log(`[${message.hub.name} #${message.channel.name}] ${message.author.username}: ${message.content}`);
 
   if (message.content === "!ping") {
     await message.reply("Pong!");
