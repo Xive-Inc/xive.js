@@ -943,6 +943,28 @@ export class HubMe {
   }
 }
 
+/**
+ * A member's presence in a hub, from `presenceUpdate` (Presence intent). discord.js's `Presence`,
+ * with Xive's statuses — `online`, `away`, `busy`, `offline` — and one activity.
+ */
+export class Presence {
+  /** @param {Client} client @param {Hub} hub @param {any} data */
+  constructor(client, hub, data) {
+    this.client = client;
+    this.hub = hub;
+    this.userId = data.user_id;
+    /** @type {string} */
+    this.status = data.status;
+    /**
+     * `{ custom: { text, emoji } | null, game: { name, startedAt, … } | null }`, or null.
+     * @type {any}
+     */
+    this.activity = data.activity ?? null;
+  }
+  get user() { return this.client.users.cache.get(this.userId) ?? null; }
+  get member() { return this.hub.members.cache.get(this.userId) ?? null; }
+}
+
 export class Hub {
   /** @param {Client} client @param {any} data an entry of GET /hubs/applications/@me/hubs */
   constructor(client, data) {
@@ -956,6 +978,8 @@ export class Hub {
     this.channels = new ChannelManager(this);
     this.members = new MemberManager(this);
     this.roles = new RoleManager(this);
+    /** Presences seen over `presenceUpdate`, by user id. Empty without the Presence intent. */
+    this.presences = { cache: /** @type {Collection<string, Presence>} */ (new Collection()) };
     /** The application in this hub — its roles and permissions. */
     this.me = new HubMe(this, data);
   }

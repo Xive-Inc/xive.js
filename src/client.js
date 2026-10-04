@@ -3,7 +3,7 @@ import { Connection } from "./connection.js";
 import { Collection } from "./collection.js";
 import { Events } from "./constants.js";
 import { toCommandJSON } from "./builders.js";
-import { ClientUser, Hub, Member, Message, MessageReaction, User } from "./structures.js";
+import { ClientUser, Hub, Member, Message, MessageReaction, Presence, User } from "./structures.js";
 import { createInteraction } from "./interactions.js";
 import { InteractionCollector, awaitOne } from "./collector.js";
 
@@ -200,6 +200,17 @@ export class Client extends EventEmitter {
             ? this.users.add({ id: u.profile_id, username: u.username ?? null, name: u.name ?? null })
             : this.users.add({ id: u.application_id, username: u.name, name: u.name, bot: true });
           this.emit(event.type === "message.reaction_added" ? Events.MessageReactionAdd : Events.MessageReactionRemove, reaction, user);
+          return;
+        }
+        case "presence.updated": {
+          // Presence intent only. Sent when a member comes online or changes activity — going
+          // offline is a timeout with no event, so read members when you need to know that.
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub) return;
+          const old = hub.presences.cache.get(d.user_id) ?? null;
+          const presence = new Presence(this, hub, d);
+          hub.presences.cache.set(d.user_id, presence);
+          this.emit(Events.PresenceUpdate, old, presence);
           return;
         }
         case "member.joined": {

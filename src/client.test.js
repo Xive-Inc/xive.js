@@ -473,3 +473,18 @@ test("user/role/channel selects: builders send discord.js JSON; picks arrive res
   assert.equal(got?.members.get("u-2")?.nick, "L");
   await client.destroy();
 });
+
+test("presenceUpdate: old and new presence, cached on hub.presences", async (t) => {
+  fakeGateway(t);
+  fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  /** @type {any[]} */
+  const seen = [];
+  client.on(Events.PresenceUpdate, (oldP, newP) => seen.push([oldP?.status ?? null, newP.status, newP.activity?.game?.name ?? null]));
+  await publish(client, "presence.updated", { hub_id: HUB.id, user_id: "u-1", status: "online", activity: null });
+  await publish(client, "presence.updated", { hub_id: HUB.id, user_id: "u-1", status: "busy", activity: { custom: null, game: { name: "Rust" } } });
+  assert.deepEqual(seen, [[null, "online", null], ["online", "busy", "Rust"]]);
+  assert.equal(client.hubs.cache.get(HUB.id)?.presences.cache.get("u-1")?.status, "busy");
+  await client.destroy();
+});

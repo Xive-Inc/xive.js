@@ -18,6 +18,7 @@ export const Events = Object.freeze({
   BanRemove: "banRemove",
   HubCreate: "hubCreate",
   InteractionCreate: "interactionCreate",
+  PresenceUpdate: "presenceUpdate",
   Disconnect: "disconnect",
   Reconnect: "reconnect",
   Error: "error",
