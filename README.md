@@ -1,7 +1,7 @@
 <div align="center">
   <br />
   <p>
-    <a href="https://hub.thexive.com/developers"><img src="https://hub.thexive.com/brand/xive-hub-512.png" width="128" alt="Xive" /></a>
+    <a href="https://hub.thexive.com/developers"><img src="https://thexive.com/brand/xive-wordmark-white.png" width="128" alt="Xive" /></a>
   </p>
   <h1>xive.js</h1>
   <p><b>Build bots for Xive hubs.</b></p>
