@@ -1225,6 +1225,8 @@ export declare class CommandInteraction extends BaseInteraction {
   kind: "command";
   commandId: string;
   commandName: string;
+  /** The hub a hub command is registered to; null for a global command. */
+  commandHubId: string | null;
   options: CommandInteractionOptionResolver;
   showModal(modal: ModalBuilder | APIModal): Promise<void>;
   awaitModalSubmit(options?: AwaitModalSubmitOptions): Promise<ModalSubmitInteraction>;
@@ -1317,6 +1319,8 @@ export declare class AutocompleteInteraction extends BaseInteraction {
   kind: "autocomplete";
   commandId: string;
   commandName: string;
+  /** The hub a hub command is registered to; null for a global command. */
+  commandHubId: string | null;
   options: CommandInteractionOptionResolver;
   responded: boolean;
   /** Up to 25 suggestions. */

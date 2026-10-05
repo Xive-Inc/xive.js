@@ -167,6 +167,8 @@ export class CommandInteraction extends BaseInteraction {
     super(client, hub, data);
     this.commandId = data.command.id;
     this.commandName = data.command.name;
+    /** The hub a hub command is registered to; null for a global command. discord.js's `commandGuildId`. */
+    this.commandHubId = data.command.hub_id ?? null;
     this.options = new CommandOptions(this, data.options ?? [], data.subcommand ?? null, data.subcommand_group ?? null);
   }
 
@@ -361,6 +363,8 @@ export class AutocompleteInteraction extends BaseInteraction {
     super(client, hub, data);
     this.commandId = data.command.id;
     this.commandName = data.command.name;
+    /** The hub a hub command is registered to; null for a global command. discord.js's `commandGuildId`. */
+    this.commandHubId = data.command.hub_id ?? null;
     this.options = new CommandOptions(this, data.options ?? [], data.subcommand ?? null, data.subcommand_group ?? null);
     this.responded = false;
   }
