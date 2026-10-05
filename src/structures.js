@@ -2,6 +2,7 @@ import { Collection } from "./collection.js";
 import { ActivityType, ChannelKind, Permissions } from "./constants.js";
 import { XiveUnsupportedError } from "./errors.js";
 import { enc } from "./rest.js";
+import { toCommandJSON } from "./builders.js";
 import { attachmentEntries, checkFileCount, pickFiles, resolveFiles } from "./files.js";
 
 /** Where the app is served — the host a channel link must name for the app to recognise it. */
@@ -56,6 +57,32 @@ export class PermissionSet {
   toArray() {
     return [...this.keys];
   }
+}
+
+/**
+ * Permissions as discord.js takes them — a name (`"BanMembers"`), a key (`"mod_ban"`), an array of
+ * either, or a PermissionSet — as Xive keys.
+ * @param {any} perms @returns {string[]}
+ */
+export function permissionKeys(perms) {
+  if (perms == null) return [];
+  if (perms instanceof PermissionSet) return perms.toArray();
+  const list = typeof perms === "string" ? [perms] : [...perms];
+  return list.map((p) => PermissionSet.resolve(String(p)));
+}
+
+/**
+ * A role's WHOLE new permission set → the `{ key: true | false }` map the role routes take. Keys the
+ * role has now and the new set leaves out become false; keys in neither are not sent, so the role
+ * keeps them as they are (including inherit).
+ * @param {any} next @param {Iterable<string>} [current]
+ */
+export function permissionMap(next, current = []) {
+  const want = new Set(permissionKeys(next));
+  /** @type {Record<string, boolean>} */ const map = {};
+  for (const k of current) if (!want.has(k)) map[k] = false;
+  for (const k of want) map[k] = true;
+  return map;
 }
 
 /* ── Users ──────────────────────────────────────────────────────────────────────────────────── */
@@ -286,8 +313,30 @@ export class Role {
   }
   /** `<role:id>` — interpolating a role mentions it. */
   toString() { return UUID.test(this.id) ? `<role:${this.id}>` : `@${this.name}`; }
-  edit(/** @type {{ name?: string, color?: string }} */ data) {
-    return this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`, data);
+  /**
+   * `permissions` is the role's whole new set, as in discord.js; your application can only add or
+   * remove permissions it has itself.
+   * @param {{ name?: string, color?: string, position?: number, permissions?: any }} data
+   */
+  async edit(data) {
+    const { position, permissions, ...rest } = data;
+    /** @type {Record<string, any>} */ const body = { ...rest };
+    if (position !== undefined) body.rank = position;
+    if (permissions !== undefined) body.permissions = permissionMap(permissions, this.permissions.keys);
+    const out = await this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`, body);
+    if (rest.name !== undefined) this.name = rest.name;
+    if (rest.color !== undefined) {
+      this.hexColor = rest.color;
+      this.color = parseInt(String(rest.color).replace(/^#/, ""), 16) || 0;
+    }
+    if (position !== undefined) this.position = position;
+    if (permissions !== undefined) this.permissions = new PermissionSet(permissionKeys(permissions));
+    return out;
+  }
+  /** Replace the role's permissions. @param {any} permissions */
+  async setPermissions(permissions) {
+    await this.edit({ permissions });
+    return this;
   }
   delete() {
     return this.client.core.rest.delete(`/hubs/${enc(this.hub.id)}/app/roles/${enc(this.id)}`);
@@ -1142,16 +1191,47 @@ class RoleManager {
     return id ? this.cache.get(id) ?? null : this.cache;
   }
 
-  /** @param {{ name: string, color?: string }} options */
+  /**
+   * `permissions`: only ones your application has itself.
+   * @param {{ name: string, color?: string, position?: number, permissions?: any }} options
+   */
   async create(options) {
-    const { role } = await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/roles`, options);
-    const created = new Role(this.hub.client, this.hub, role);
+    const { position, permissions, ...rest } = options;
+    /** @type {Record<string, any>} */ const body = { ...rest };
+    if (position !== undefined) body.rank = position;
+    if (permissions !== undefined) body.permissions = permissionMap(permissions);
+    const { role } = await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/roles`, body);
+    const created = new Role(this.hub.client, this.hub, { ...role, color: rest.color, permissions: permissionKeys(permissions) });
     this.cache.set(created.id, created);
     return created;
   }
 
   get highest() {
     return this.cache.reduce((best, r) => (!best || r.position > best.position ? r : best), /** @type {Role | null} */ (null));
+  }
+}
+
+/**
+ * `hub.commands` — commands offered in this hub only, beside the global set. A hub command named
+ * like a global one replaces it here, so a new version can be tried in one hub first.
+ */
+export class HubCommandManager {
+  /** @param {Hub} hub */
+  constructor(hub) {
+    this.hub = hub;
+  }
+
+  /** Replace this hub's whole command set. Builders or their JSON; `[]` removes them all. @param {any[]} commands */
+  async set(commands) {
+    const { commands: saved } = await this.hub.client.core.rest.put(
+      `/hubs/${enc(this.hub.id)}/app/commands`, { commands: commands.map(toCommandJSON) },
+    );
+    return new Collection((saved ?? []).map((/** @type {any} */ c) => [c.id ?? c.name, c]));
+  }
+
+  async fetch() {
+    const { commands } = await this.hub.client.core.rest.get(`/hubs/${enc(this.hub.id)}/app/commands`);
+    return new Collection((commands ?? []).map((/** @type {any} */ c) => [c.id ?? c.name, c]));
   }
 }
 
@@ -1254,6 +1334,8 @@ export class Hub {
     this.presences = { cache: /** @type {Collection<string, Presence>} */ (new Collection()) };
     /** The application in this hub — its roles and permissions. */
     this.me = new HubMe(this, data);
+    /** Commands for this hub only — discord.js's `guild.commands`. */
+    this.commands = new HubCommandManager(this);
   }
 
   toString() { return this.name; }

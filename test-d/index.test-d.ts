@@ -28,6 +28,8 @@ import {
   verifySignature,
 } from "xive.js";
 import type {
+  APIApplicationCommand,
+  Hub,
   APIEphemeralMessage,
   APIMessage,
   AutocompleteInteraction,
@@ -374,3 +376,14 @@ async function raw() {
 void moderation;
 void raw;
 client.login(process.env.XIVE_TOKEN);
+
+// Hub commands and role permissions.
+async function hubCommandsAndRolePermissions(hub: Hub, role: Role, client: Client<true>) {
+  const set: Collection<string, APIApplicationCommand> = await hub.commands.set([new SlashCommandBuilder().setName("beta").setDescription("x")]);
+  await client.application.commands.set([], hub.id);
+  await client.application.commands.fetch(hub.id);
+  const same: Role = await role.setPermissions(["BanMembers", "mod_kick"]);
+  await role.edit({ position: 3, permissions: role.permissions });
+  await hub.roles.create({ name: "Helper", permissions: "KickMembers" });
+  void set; void same;
+}

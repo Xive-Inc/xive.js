@@ -694,8 +694,22 @@ export declare class Role {
   permissions: PermissionSet;
   /** `<role:id>` — interpolating a role mentions it. */
   toString(): string;
-  edit(data: { name?: string; color?: string }): Promise<any>;
+  /** `permissions` is the role's whole new set; your application can only add or remove ones it has. */
+  edit(data: RoleEditOptions): Promise<any>;
+  /** Replace the role's permissions — only ones your application has itself can change. */
+  setPermissions(permissions: RolePermissionsResolvable): Promise<this>;
   delete(): Promise<any>;
+}
+
+/** A role's whole permission set: one permission, several, or a PermissionSet. */
+export type RolePermissionsResolvable = PermissionResolvable | readonly PermissionResolvable[] | PermissionSet;
+
+export interface RoleEditOptions {
+  name?: string;
+  color?: string;
+  /** Sent as the role's rank. */
+  position?: number;
+  permissions?: RolePermissionsResolvable;
 }
 
 /** A role a member holds that the hub's role cache does not know. */
@@ -1013,7 +1027,17 @@ export interface RoleManager {
   readonly highest: Role | null;
   fetch(): Promise<Collection<string, Role>>;
   fetch(id: string): Promise<Role | null>;
-  create(options: { name: string; color?: string }): Promise<Role>;
+  create(options: RoleEditOptions & { name: string }): Promise<Role>;
+}
+
+/** `hub.commands` — this hub's own commands, beside the global set. discord.js's `guild.commands`. */
+export interface HubCommandManager {
+  hub: Hub;
+  /** Replace this hub's whole command set; `[]` removes them all. */
+  set(
+    commands: readonly (SlashCommandBuilder | APIApplicationCommand)[],
+  ): Promise<Collection<string, APIApplicationCommand>>;
+  fetch(): Promise<Collection<string, APIApplicationCommand>>;
 }
 
 /** `hub.me` — the application itself in this hub. */
@@ -1067,6 +1091,8 @@ export declare class Hub {
   /** Presences seen over `presenceUpdate`, by user id. */
   presences: { cache: Collection<string, Presence> };
   me: HubMe;
+  /** Commands offered in this hub only. One named like a global command replaces it here. */
+  commands: HubCommandManager;
   toString(): string;
 }
 
@@ -1391,11 +1417,13 @@ export interface UserManager {
 /** `client.application.commands`. */
 export interface ApplicationCommandManager {
   client: Client;
-  /** Replace the whole command set. */
+  /** Replace the whole command set — or, with `hubId`, that hub's own set. */
   set(
     commands: readonly (SlashCommandBuilder | APIApplicationCommand)[],
+    hubId?: string,
   ): Promise<Collection<string, APIApplicationCommand>>;
-  fetch(): Promise<Collection<string, APIApplicationCommand>>;
+  /** The global set, or with `hubId` that hub's own. */
+  fetch(hubId?: string): Promise<Collection<string, APIApplicationCommand>>;
 }
 
 type If<T extends boolean, A, B = null> = T extends true ? A : T extends false ? B : A | B;

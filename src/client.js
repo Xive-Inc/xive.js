@@ -358,16 +358,28 @@ class ApplicationCommandManager {
     this.client = client;
   }
 
-  /** Replace the whole command set. Builders or their JSON. @param {any[]} commands */
-  async set(commands) {
+  /**
+   * Replace the whole command set. Builders or their JSON. With `hubId`, that hub's own set instead,
+   * as discord.js's `set(commands, guildId)`.
+   * @param {any[]} commands @param {string} [hubId]
+   */
+  async set(commands, hubId) {
+    if (hubId) return this.#hub(hubId).set(commands);
     const core = /** @type {Connection} */ (this.client.core);
     const { commands: saved } = await core.setCommands(commands.map(toCommandJSON));
     return new Collection((saved ?? []).map((/** @type {any} */ c) => [c.id ?? c.name, c]));
   }
 
-  async fetch() {
+  /** The global set, or with `hubId` that hub's own. @param {string} [hubId] */
+  async fetch(hubId) {
+    if (hubId) return this.#hub(hubId).fetch();
     const core = /** @type {Connection} */ (this.client.core);
     const { commands } = await core.rest.get("/hubs/applications/@me/commands");
     return new Collection(commands.map((/** @type {any} */ c) => [c.id ?? c.name, c]));
+  }
+
+  /** @param {string} hubId */
+  #hub(hubId) {
+    return (this.client.hubs.cache.get(hubId) ?? new Hub(this.client, { id: hubId })).commands;
   }
 }

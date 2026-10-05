@@ -30,6 +30,8 @@ function fakeApi(t) {
       return json({ presence: { status: body.status ?? "online", activity: body.activity ?? null } });
     }
     if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
+    if (path === "/hubs/hub-1/app/commands") return json({ commands: (body?.commands ?? []).map((/** @type {any} */ c) => ({ id: `hubcmd-${c.name}`, ...c })) });
+    if (path === "/hubs/hub-1/app/roles" && method === "POST") return json({ role: { id: "role-new", name: body.name, rank: body.rank ?? 100 } }, 201);
     if (path === "/hubs/hub-1/app/roles") return json({ roles: [{ id: "role-mod", name: "Moderator", color: "#ff0000", rank: 500, managed: false, permissions: ["mod_ban", "mod_kick"] }] });
     if (path === "/hubs/hub-1/app/channels/chan-1/messages" && method === "POST") {
       return json({ message: { id: "sent-1", channel_id: "chan-1", content: body.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
@@ -1026,4 +1028,51 @@ test("ChannelSelectMenuBuilder.setDefaultChannels takes uuid strings", async () 
   const id = "66666666-7777-4888-9999-000000000000";
   assert.deepEqual(new ChannelSelectMenuBuilder().setDefaultChannels(id, [id]).toJSON().default_values,
     [{ id, type: "channel" }, { id, type: "channel" }]);
+});
+
+test("hub commands: hub.commands.set() and application.commands.set(commands, hubId) write that hub's own set", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+
+  const saved = await hub.commands.set([new SlashCommandBuilder().setName("beta").setDescription("Try it")]);
+  const put = calls.find((c) => c.method === "PUT" && c.path === "/hubs/hub-1/app/commands");
+  assert.ok(put, "PUT to the hub's route, not the global one");
+  assert.equal(put.body.commands[0].name, "beta");
+  assert.equal(saved.get("hubcmd-beta").name, "beta");
+  assert.ok(!calls.some((c) => c.method === "PUT" && c.path === "/hubs/applications/@me/commands"));
+
+  await client.application.commands.set([{ name: "other", description: "x" }], "hub-1");
+  assert.equal(calls.filter((c) => c.method === "PUT" && c.path === "/hubs/hub-1/app/commands").at(-1).body.commands[0].name, "other");
+  const fetched = await client.application.commands.fetch("hub-1");
+  assert.ok(fetched instanceof Map);
+  assert.ok(calls.some((c) => c.method === "GET" && c.path === "/hubs/hub-1/app/commands"));
+});
+
+test("role permissions: setPermissions sends the whole set as a map; create takes permissions", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+  const mod = await hub.roles.fetch("role-mod");
+
+  // Moderator has mod_ban and mod_kick; the new set keeps kick, drops ban, adds timeout by its discord.js name.
+  const back = await mod.setPermissions(["mod_kick", "ModerateMembers"]);
+  const patch = calls.find((c) => c.method === "PATCH" && c.path === "/hubs/hub-1/app/roles/role-mod");
+  assert.equal(back, mod, "resolves to the role");
+  assert.equal(patch.body.permissions.mod_ban, false, "a key left out is removed");
+  assert.equal(patch.body.permissions.mod_kick, true);
+  assert.equal(patch.body.permissions.mod_timeout, true, "a discord.js name is sent as its key");
+  assert.ok(mod.permissions.has("mod_kick") && !mod.permissions.has("mod_ban"), "the cached role follows");
+
+  await mod.edit({ position: 400 });
+  assert.equal(calls.filter((c) => c.method === "PATCH").at(-1).body.rank, 400, "position is sent as rank");
+
+  const role = await hub.roles.create({ name: "Helper", permissions: ["mod_kick"] });
+  const post = calls.find((c) => c.method === "POST" && c.path === "/hubs/hub-1/app/roles");
+  assert.deepEqual(post.body.permissions, { mod_kick: true });
+  assert.ok(role.permissions.has("mod_kick"));
 });
