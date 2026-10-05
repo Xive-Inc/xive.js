@@ -1004,7 +1004,10 @@ export class Channel {
     return out;
   }
 
-  sendTyping() { return Promise.resolve(); }
+  /** "<app> is typing…" for ten seconds, or until your next message here. Safe to call in a loop. */
+  async sendTyping() {
+    await this.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/typing`);
+  }
 
   /** @param {boolean} [locked] */
   async setLocked(locked = true) {

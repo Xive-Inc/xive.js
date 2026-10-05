@@ -973,7 +973,7 @@ export declare class Channel {
   bulkDelete(
     messages: number | readonly (string | Message)[] | Collection<string, Message>,
   ): Promise<Collection<string, { id: string }>>;
-  /** Does nothing; Xive has no typing indicator for applications. */
+  /** Shows "<app> is typing…" for ten seconds, or until your next message in the channel. */
   sendTyping(): Promise<void>;
   setLocked(locked?: boolean): Promise<this>;
 }
