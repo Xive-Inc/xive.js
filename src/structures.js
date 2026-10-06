@@ -499,17 +499,22 @@ export function toXiveMessage(client, hub, options) {
   }
 
   /*
-   * Xive takes no embeds from an application, and no content beside components — the API answers
-   * both with a 400. A bot written for Discord does both constantly, so the shapes are rebuilt here
-   * rather than refused: each embed becomes a Container, and content becomes the Text Display
-   * above it. What the reader sees is the same card.
+   * Discord's two shapes, as the API takes them: `content`, `embeds` and rows of buttons together,
+   * or a layout tree (a Container, Text Display, …) alone. Embeds and content beside a layout tree
+   * are a 400 on Discord and on Xive, so they are rebuilt here rather than refused: each embed
+   * becomes a Container, and content becomes the Text Display above it.
    */
-  const embeds = (o.embeds ?? []).map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e));
-  const cards = embeds.map((/** @type {any} */ e) => embedToContainer(e, translate)).filter(Boolean);
-  if (cards.length) body.components = [...cards, .../** @type {any[]} */ (body.components ?? [])];
+  if (o.embeds !== undefined && o.embeds !== null) {
+    body.embeds = o.embeds.map((/** @type {any} */ e) => (typeof e?.toJSON === "function" ? e.toJSON() : e)).map((/** @type {any} */ e) => translateEmbed(e, translate));
+  }
   const components = /** @type {any[] | undefined} */ (body.components);
-  if (components?.length && typeof body.content === "string") {
-    if (body.content.trim() !== "") body.components = [{ type: 10, content: body.content }, ...components];
+  if (components?.some((c) => c?.type !== 1)) {
+    const cards = /** @type {any[]} */ (body.embeds ?? []).map((e) => embedToContainer(e, (t) => t)).filter(Boolean);
+    body.components = [...cards, ...components];
+    if (typeof body.content === "string" && body.content.trim() !== "") {
+      body.components = [{ type: 10, content: body.content }, .../** @type {any[]} */ (body.components)];
+    }
+    delete body.embeds;
     delete body.content;
   }
   if (o.poll) body.poll = toXivePoll(o.poll);
@@ -550,6 +555,22 @@ function pollEmoji(e) {
   if (typeof e === "string") return e;
   if (e.id) return `custom:${e.id}`;
   return e.name ? String(e.name) : null;
+}
+
+/**
+ * One embed with Discord's mention syntax in its description and field values rewritten to
+ * Xive's (translateMentions), which the server resolves in a card as it does in text.
+ *
+ * @param {any} e @param {(text: string) => string} translate
+ */
+function translateEmbed(e, translate) {
+  if (!e || typeof e !== "object") return e;
+  const out = { ...e };
+  if (typeof e.description === "string") out.description = translate(e.description);
+  if (Array.isArray(e.fields)) {
+    out.fields = e.fields.map((/** @type {any} */ f) => (typeof f?.value === "string" ? { ...f, value: translate(f.value) } : f));
+  }
+  return out;
 }
 
 /**

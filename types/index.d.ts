@@ -564,7 +564,7 @@ export type MessageReferenceResolvable = string | { messageId: string } | { id: 
 
 export interface BaseMessageOptions {
   content?: string | null;
-  /** Sent as Containers that draw the same card — Xive takes no embeds from an application. */
+  /** Sent as embeds; beside layout components, as Containers that draw the same card. */
   embeds?: readonly (EmbedBuilder | APIEmbed)[];
   /** Rows of buttons or a select menu. `[]` on an edit removes them. */
   components?: readonly (ActionRowBuilder<any> | APIActionRow | APIComponent)[];

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Connection } from "./connection.js";
-import { Channel, Message, Role, User, embedToContainer, translateMentions } from "./structures.js";
+import { Channel, Message, Role, User, embedToContainer, toXiveMessage, translateMentions } from "./structures.js";
 import {
   Client, Events, EmbedBuilder, SlashCommandBuilder, Permissions, XiveUnsupportedError, ActivityType,
 } from "./index.js";
@@ -144,12 +144,10 @@ test("a discord.js-style bot, ported: ready, !ping, embeds, moderation, reaction
 
   await publish(client, "message.created", fromMember("!info"));
   post = calls.filter((c) => c.method === "POST" && c.path.endsWith("/messages")).at(-1);
-  // Xive takes no embeds from an application: the card is sent as a Container that draws the same.
-  assert.equal(post?.body.embeds, undefined);
-  assert.deepEqual(post?.body.components, [{
-    type: 17, accent_color: 0x5865f2,
-    components: [{ type: 10, content: "## Hub" }, { type: 10, content: "**Name**\nTest Hub" }],
-  }]);
+  // Embeds go as embeds, as on Discord.
+  assert.equal(post?.body.components, undefined);
+  assert.equal(post?.body.embeds?.[0]?.title, "Hub");
+  assert.equal(post?.body.embeds?.[0]?.fields?.[0]?.value, "Test Hub");
 
   // The author holds Moderator (role-mod), whose permissions include mod_ban.
   await client.hubs.cache.get("hub-1")?.members.fetch("user-1");
@@ -302,10 +300,9 @@ test("components: buttons, a collector that updates, a select menu, and a form",
 
   await publish(client, "message.created", fromMember("!vote"));
   const send = calls.find((c) => c.method === "POST" && c.path.endsWith("/messages"));
-  // Content beside components is a 400 on Xive, so it is sent as the Text Display above them.
-  assert.equal(send?.body.content, undefined);
-  assert.deepEqual(send?.body.components?.[0], { type: 10, content: "Vote!" });
-  assert.deepEqual(send?.body.components?.slice(1), [{ type: 1, components: [
+  // Content beside rows of buttons is sent as it is, as on Discord.
+  assert.equal(send?.body.content, "Vote!");
+  assert.deepEqual(send?.body.components, [{ type: 1, components: [
     { type: 2, custom_id: "yes", label: "Yes", style: 3 },
     { type: 2, custom_id: "no", label: "No", style: 4 },
     { type: 2, label: "Docs", style: 5, url: "https://example.com" },
@@ -329,6 +326,19 @@ test("components: buttons, a collector that updates, a select menu, and a form",
   await ix("ix-sub", { type: "modal_submit", custom_id: "fb", fields: [{ custom_id: "text", value: "great bot" }], message: { id: "sent-1", private: false } });
   assert.deepEqual(calls.filter((c) => c.path.endsWith("/ix-sub/callback")).at(-1)?.body,
     { type: "reply", content: "Thanks: great bot", ephemeral: true });
+});
+
+test("toXiveMessage: Discord's two shapes — embeds and rows as sent, a layout tree alone", () => {
+  const row = { type: 1, components: [{ type: 2, style: 1, label: "Go", custom_id: "go" }] };
+  // Legacy: content, embeds and rows together; mentions in a card are rewritten.
+  assert.deepEqual(toXiveMessage(/** @type {any} */ (null), null, {
+    content: "Pick", embeds: [{ title: "T", description: "hi <@0123abcd>" }], components: [row],
+  }), { content: "Pick", embeds: [{ title: "T", description: "hi <user:0123abcd>" }], components: [row] });
+  // Layout: embeds become Containers and content the Text Display above them.
+  const layout = { type: 10, content: "x" };
+  assert.deepEqual(toXiveMessage(/** @type {any} */ (null), null, {
+    content: "Pick", embeds: [{ title: "T" }], components: [layout],
+  }), { components: [{ type: 10, content: "Pick" }, { type: 17, components: [{ type: 10, content: "## T" }] }, layout] });
 });
 
 test("embedToContainer: thumbnail beside the heading, image, footer, nothing for an empty embed", () => {

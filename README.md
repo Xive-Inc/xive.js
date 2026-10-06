@@ -126,11 +126,10 @@ A few things work differently:
 - **A private answer is not a message.** `followUp()` and `editReply()` resolve to a `Message`,
   as in discord.js, but an ephemeral one resolves to `{ id }`. `reply()` resolves to the API's
   JSON for the message unless you pass `fetchReply: true`.
-- **Embeds are sent as components.** Xive takes no embeds from an application, so each
-  `EmbedBuilder` is sent as a Container that draws the same card (title, description, fields,
-  thumbnail, image, footer, colour; author and footer icons are dropped). `content` sent with
-  components or embeds becomes the Text Display above them, since Xive refuses content beside
-  components. Text across the message is capped at 4000 characters.
+- **Embeds and components, as on Discord.** `content`, `embeds` and rows of buttons go together.
+  Sent beside layout components (a Container, Text Display, …), which Xive and Discord both
+  refuse, each `EmbedBuilder` becomes a Container that draws the same card (author and footer icons
+  are dropped) and `content` becomes the Text Display above them.
 - **Up to 10 files per message.** `files: [path | Buffer | URL | new AttachmentBuilder(…)]` works on
   `send()`, `reply()` and `followUp()`, up to 32 MB each, sent in order. Not on ephemeral replies
   or edits. A received message's files are `message.attachments`, a Collection of `Attachment`
