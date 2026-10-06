@@ -42,6 +42,7 @@ export declare const Permissions: {
   readonly WarnMembers: "mod_warn";
   readonly ManageChannels: "conv_manage_channels";
   readonly ManageHub: "hub_customize";
+  readonly Administrator: "hub_administrator";
   readonly ManageRoles: "hub_manage_roles";
   readonly AssignRoles: "hub_assign_roles";
   readonly ManageNicknames: "hub_manage_nicknames";
