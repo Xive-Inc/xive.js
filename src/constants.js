@@ -40,6 +40,7 @@ export const Permissions = Object.freeze({
   WarnMembers: "mod_warn",
   ManageChannels: "conv_manage_channels",
   ManageHub: "hub_customize",
+  Administrator: "hub_administrator",
   ManageRoles: "hub_manage_roles",
   AssignRoles: "hub_assign_roles",
   ManageNicknames: "hub_manage_nicknames",
