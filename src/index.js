@@ -6,7 +6,7 @@ export {
   StringSelectMenuOptionBuilder, UserSelectMenuBuilder, RoleSelectMenuBuilder, MentionableSelectMenuBuilder,
   ChannelSelectMenuBuilder, ModalBuilder, TextInputBuilder,
 } from "./builders.js";
-export { Hub, HubMe, Channel, Member, Role, User, ClientUser, Presence, Message, MessageReaction, Poll, PollAnswer, PermissionSet } from "./structures.js";
+export { Hub, HubMe, Channel, ForumPost, Member, Role, User, ClientUser, Presence, Message, MessageReaction, Poll, PollAnswer, PermissionSet } from "./structures.js";
 export {
   BaseInteraction, CommandInteraction, MessageComponentInteraction, ModalSubmitInteraction, AutocompleteInteraction,
 } from "./interactions.js";

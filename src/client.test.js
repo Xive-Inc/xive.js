@@ -9,6 +9,23 @@ import {
 const APP = { id: "app-1", name: "Modbot", client_id: "c", icon_url: null };
 const HUB = { id: "hub-1", slug: "test-hub", name: "Test Hub", description: null, installed_at: "2026-10-01T00:00:00Z" };
 
+const FORUM = {
+  id: "forum-1", name: "help", slug: "help", kind: "forum", topic: null, category_id: null,
+  forum_tags: [{ id: "tag-bug", name: "Bug", color: "#ff0000", emoji: "🐛", mod_only: false }, { id: "tag-staff", name: "Staff", color: null, emoji: null, mod_only: true }],
+  forum_settings: { require_tag: true, default_sort: "activity", default_layout: "list" },
+};
+
+/** A Post as the API sends it, with `over` on top. @param {any} [over] */
+const forumPost = (over = {}) => ({
+  id: "post-1", forum_id: "forum-1", title: "Crash on login", applied_tags: ["tag-bug"],
+  owner: { id: "user-1", username: "sam", displayName: "Sam", display_name: "Sam", avatar_url: null },
+  author: { type: "user", id: "user-1", username: "sam", displayName: "Sam", avatar_url: null },
+  created_at: "2026-10-07T10:00:00Z", last_activity_at: "2026-10-07T11:00:00Z", reply_count: 2, vote_count: 5,
+  accepted_message_id: null, is_solved: false, is_pinned: false, pinned_at: null, is_archived: false, is_locked: false,
+  starter: { id: "starter-1", excerpt: "It **crashes**", media_url: null, media_type: null, is_deleted: false },
+  ...over,
+});
+
 /** A fake Xive API: records every call, answers the routes a bot touches. */
 function fakeApi(t) {
   /** @type {{ method: string, path: string, body: any }[]} */
@@ -18,9 +35,13 @@ function fakeApi(t) {
   const original = globalThis.fetch;
   globalThis.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init) => {
     const path = new URL(url).pathname;
+    const query = Object.fromEntries(new URL(url).searchParams);
     const method = init.method;
-    const body = init.body ? JSON.parse(init.body) : undefined;
-    calls.push({ method, path, body });
+    // Multipart: the JSON part, with the file names it carried as `files`.
+    const body = init.body instanceof FormData
+      ? { ...JSON.parse(String(init.body.get("payload_json"))), files: [...init.body.keys()].filter((k) => k !== "payload_json").map((k) => /** @type {any} */ (init.body.get(k)).name) }
+      : init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ method, path, body, ...(Object.keys(query).length && { query }) });
     const json = (/** @type {any} */ data, status = 200) => new Response(JSON.stringify({ success: true, ...data }), { status });
 
     if (path === "/hubs/applications/@me") return json({ application: APP });
@@ -29,6 +50,7 @@ function fakeApi(t) {
     if (path === "/hubs/applications/@me/presence") {
       return json({ presence: { status: body.status ?? "online", activity: body.activity ?? null } });
     }
+    if (path === "/hubs/hub-1/app/channels" && method === "POST") return json({ channel: { id: "chan-new", name: body.name, kind: body.kind } }, 201);
     if (path === "/hubs/hub-1/app/channels") return json({ channels: [{ id: "chan-1", name: "general", slug: "general", kind: "conversation", topic: null, category_id: null }] });
     if (path === "/hubs/hub-1/app/commands") return json({ commands: (body?.commands ?? []).map((/** @type {any} */ c) => ({ id: `hubcmd-${c.name}`, ...c })) });
     if (path === "/hubs/hub-1/app/roles" && method === "POST") return json({ role: { id: "role-new", name: body.name, rank: body.rank ?? 100 } }, 201);
@@ -71,6 +93,29 @@ function fakeApi(t) {
       if (route === "followups") {
         return json(body.ephemeral ? { ephemeral: true, message: { id: `private-followup-${ix}` } } : { ephemeral: false, message: whole(`followup-${ix}`) }, 201);
       }
+    }
+    // Forums: forum-1 holds post-1.
+    if (path === "/hubs/hub-1/app/channels/forum-1/posts" && method === "POST") {
+      const { title, applied_tags, ...opening } = body;
+      return json({ post: forumPost({ title, applied_tags: applied_tags ?? [], owner: null, author: { type: "application", application_id: APP.id, name: APP.name } }),
+        message: { id: "starter-1", channel_id: "post-1", content: opening.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
+    }
+    if (path === "/hubs/hub-1/app/channels/forum-1/posts") {
+      return json({ posts: [forumPost({ is_pinned: true })], has_more: true, page: Number(query.page ?? 0), sort: query.sort ?? "activity", forum: FORUM });
+    }
+    if (path === "/hubs/hub-1/app/posts/post-1" && method === "PATCH") {
+      return json({ post: forumPost({
+        ...(body.title !== undefined && { title: body.title }), ...(body.applied_tags && { applied_tags: body.applied_tags }),
+        ...(body.pinned !== undefined && { is_pinned: body.pinned }), ...(body.locked !== undefined && { is_locked: body.locked }),
+        ...(body.archived !== undefined && { is_archived: body.archived }),
+        ...(body.accepted_message_id !== undefined && { accepted_message_id: body.accepted_message_id, is_solved: body.accepted_message_id !== null }),
+      }) });
+    }
+    if (path === "/hubs/hub-1/app/posts/post-1") {
+      return json({ post: { ...forumPost({ accepted_message_id: "reply-9", is_solved: true }), accepted_message: { id: "reply-9", channel_id: "post-1", content: "Fixed in 2.1", author: { type: "member", profile_id: "user-2", username: "kai", name: "Kai" } } }, forum: FORUM });
+    }
+    if (path === "/hubs/hub-1/app/channels/post-1/messages" && method === "POST") {
+      return json({ message: { id: "reply-1", channel_id: "post-1", content: body.content ?? "", author: { type: "application", application_id: APP.id, name: APP.name } } }, 201);
     }
     if (path.endsWith("/voters")) return json({ voters: [{ profile_id: "user-7", username: "kai", display_name: "Kai", avatar_url: null }] });
     if (path.endsWith("/poll/end")) return json({ poll: { ended: true, ended_at: "2026-10-04T13:00:00Z" } });
@@ -1085,4 +1130,112 @@ test("role permissions: setPermissions sends the whole set as a map; create take
   const post = calls.find((c) => c.method === "POST" && c.path === "/hubs/hub-1/app/roles");
   assert.deepEqual(post.body.permissions, { mod_kick: true });
   assert.ok(role.permissions.has("mod_kick"));
+});
+
+test("forums: posts.create, fetch and fetchOne, edit and its shortcuts, reply, and the two post events", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const { ChannelKind, ForumPost } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+  const forum = hub.channels.add(FORUM);
+
+  assert.equal(forum.isForum(), true);
+  assert.equal(forum.isTextBased(), false);
+  assert.equal(forum.url, "https://hub.thexive.com/hub/test-hub/forum/help");
+  assert.deepEqual(forum.forumTags[1], { id: "tag-staff", name: "Staff", color: null, emoji: null, modOnly: true });
+  assert.deepEqual(forum.forumSettings, { requireTag: true, defaultSort: "activity", defaultLayout: "list" });
+
+  // create: title and tags are the post's; the rest is the opening message, files included.
+  const post = await forum.posts.create({
+    title: "Crash on login", tags: [forum.forumTags[0], "tag-staff"], content: "Steps <@abcdef12>",
+    files: [{ attachment: Buffer.from("trace"), name: "log.txt" }],
+  });
+  const created = calls.find((c) => c.method === "POST" && c.path === "/hubs/hub-1/app/channels/forum-1/posts");
+  assert.deepEqual(created?.body, { content: "Steps <user:abcdef12>", title: "Crash on login", applied_tags: ["tag-bug", "tag-staff"], files: ["log.txt"] });
+  assert.ok(post instanceof ForumPost);
+  assert.equal(post.author?.bot, true);
+  assert.equal(post.owner, null);
+  assert.equal(post.channel.kind, ChannelKind.Thread);
+  assert.equal(post.channel.messages.cache.get("starter-1")?.content, "Steps <user:abcdef12>");
+  assert.equal(post.url, "https://hub.thexive.com/hub/test-hub/forum/help/post-1");
+
+  // fetch: camelCase options → the API's query.
+  const page = await forum.posts.fetch({ sort: "top", tag: forum.forumTags[0], status: "unanswered", query: "crash", page: 1 });
+  assert.deepEqual(calls.at(-1)?.query, { sort: "top", tag: "tag-bug", status: "unanswered", q: "crash", page: "1" });
+  assert.equal(page.hasMore, true);
+  assert.equal(page.posts[0], post, "the cached post, refreshed");
+  assert.equal(post.pinned, true);
+  assert.equal(post.owner?.username, "sam");
+  assert.equal(post.author, post.owner);
+  assert.deepEqual(post.starter, { id: "starter-1", excerpt: "It **crashes**", mediaUrl: null, mediaType: null, deleted: false });
+  assert.deepEqual([post.replyCount, post.voteCount, post.tags], [2, 5, ["tag-bug"]]);
+
+  const one = await forum.posts.fetchOne("post-1");
+  assert.equal(calls.at(-1)?.path, "/hubs/hub-1/app/posts/post-1");
+  assert.equal(one.solved, true);
+  assert.equal(one.acceptedMessage?.content, "Fixed in 2.1");
+
+  // edit and the shortcuts: camelCase → the API's fields, the response patched in.
+  await post.edit({ title: "Crash on login (2.0)", tags: ["tag-bug"], pinned: false });
+  assert.deepEqual(calls.at(-1)?.body, { title: "Crash on login (2.0)", applied_tags: ["tag-bug"], pinned: false });
+  assert.equal(post.title, "Crash on login (2.0)");
+  assert.equal(post.channel.name, "Crash on login (2.0)");
+  const reply = await post.reply("Fixed in 2.1");
+  assert.equal(calls.at(-1)?.path, "/hubs/hub-1/app/channels/post-1/messages");
+  await post.setAnswer(reply);
+  assert.deepEqual(calls.at(-1)?.body, { accepted_message_id: "reply-1" });
+  assert.equal(post.solved, true);
+  await post.setAnswer(null);
+  assert.deepEqual(calls.at(-1)?.body, { accepted_message_id: null });
+  await post.lock();
+  assert.equal(post.locked, true);
+  await post.archive();
+  assert.equal(post.archived, true);
+  await post.unpin();
+  assert.deepEqual(calls.slice(-3).map((c) => c.body), [{ locked: true }, { archived: true }, { pinned: false }]);
+
+  // Gateway: forum.post_created / forum.post_updated, for a forum the cache did not know yet.
+  /** @type {any[]} */ const seen = [];
+  client.on(Events.ForumPostCreate, (p) => seen.push(["create", p.id, p.forum.id, p.title]));
+  client.on(Events.ForumPostUpdate, (p, changes) => seen.push(["update", p.id, p.locked, changes]));
+  await publish(client, "forum.post_created", { channel_id: "forum-2", post: forumPost({ id: "post-2", forum_id: "forum-2", title: "New one" }) });
+  await publish(client, "forum.post_updated", { channel_id: "forum-2", post: forumPost({ id: "post-2", forum_id: "forum-2", title: "New one", is_locked: true }), changes: ["locked"] });
+  assert.deepEqual(seen, [["create", "post-2", "forum-2", "New one"], ["update", "post-2", true, ["locked"]]]);
+  assert.equal(hub.channels.cache.get("forum-2")?.kind, ChannelKind.Forum);
+  assert.equal(hub.channels.cache.get("forum-2")?.posts.cache.get("post-2")?.locked, true);
+  await client.destroy();
+});
+
+test("forums: create a forum with tags and settings; setForumTags and setForumSettings send the API's shapes", async (t) => {
+  fakeGateway(t);
+  const calls = fakeApi(t);
+  const { ChannelKind } = await import("./index.js");
+  const client = new Client({ baseURL: "https://api.example.test" });
+  await client.login("xive_as_test");
+  const hub = /** @type {any} */ (client.hubs.cache.get("hub-1"));
+
+  await hub.channels.create({
+    name: "help", kind: ChannelKind.Forum,
+    forumTags: [{ name: "Bug", color: "#ff0000", emoji: "🐛" }, { name: "Staff", modOnly: true }],
+    forumSettings: { requireTag: true, defaultLayout: "gallery" },
+  });
+  const made = calls.find((c) => c.method === "POST" && c.path === "/hubs/hub-1/app/channels");
+  assert.deepEqual(made?.body, {
+    name: "help", kind: "forum",
+    forum_tags: [{ name: "Bug", color: "#ff0000", emoji: "🐛" }, { name: "Staff", mod_only: true }],
+    forum_settings: { require_tag: true, default_layout: "gallery" },
+  });
+
+  const forum = hub.channels.add(FORUM);
+  await forum.setForumTags([...forum.forumTags.slice(0, 1), { name: "Question" }]);
+  const patched = calls.find((c) => c.method === "PATCH" && c.path === "/hubs/hub-1/app/channels/forum-1");
+  assert.deepEqual(patched?.body, { forum_tags: [{ id: "tag-bug", name: "Bug", color: "#ff0000", emoji: "🐛", mod_only: false }, { name: "Question" }] });
+  assert.equal(calls.at(-1)?.path, "/hubs/hub-1/app/channels", "re-read for the new tag's id");
+
+  await forum.setForumSettings({ defaultSort: "top" });
+  assert.deepEqual(calls.at(-1)?.body, { forum_settings: { default_sort: "top" } });
+  assert.deepEqual(forum.forumSettings, { requireTag: true, defaultSort: "top", defaultLayout: "list" });
+  await client.destroy();
 });

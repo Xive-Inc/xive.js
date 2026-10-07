@@ -8,12 +8,16 @@ import { attachmentEntries, checkFileCount, pickFiles, resolveFiles } from "./fi
 /** Where the app is served — the host a channel link must name for the app to recognise it. */
 const APP_ORIGIN = "https://hub.thexive.com";
 
-/** A channel kind → the app's `/hub/{slug}/{section}/{channel}` section. Threads have no address. */
+/**
+ * A channel kind → the app's `/hub/{slug}/{section}/{channel}` section. Threads have no address; a
+ * forum post's is its forum's plus `/{postId}`.
+ */
 const CHANNEL_SECTIONS = {
   [ChannelKind.Text]: "conversations",
   announcement: "conversations",
   [ChannelKind.LiveRoom]: "voice",
   [ChannelKind.RolePicker]: "roles",
+  [ChannelKind.Forum]: "forum",
 };
 
 /**
@@ -1004,6 +1008,14 @@ export class Channel {
     /** One of ChannelKind. */
     this.kind = data.kind ?? ChannelKind.Text;
     this.messages = new MessageManager(this);
+    /**
+     * A forum's tag catalogue — `[{ id, name, color, emoji, modOnly }]` — and settings
+     * (`{ requireTag, defaultSort, defaultLayout }`); null on other kinds.
+     */
+    this.forumTags = toForumTags(data.forum_tags);
+    this.forumSettings = toForumSettings(data.forum_settings);
+    /** A forum's posts. Nobody posts into a forum itself; each post is a thread of its own. */
+    this.posts = new ForumPostManager(this);
     this.threads = {
       /** @param {{ name: string, startMessage?: string | Message }} options */
       create: async (options) => {
@@ -1017,9 +1029,10 @@ export class Channel {
     };
   }
 
-  isTextBased() { return this.kind !== ChannelKind.RolePicker; }
+  isTextBased() { return this.kind !== ChannelKind.RolePicker && this.kind !== ChannelKind.Forum; }
   isThread() { return this.kind === ChannelKind.Thread; }
   isVoiceBased() { return this.kind === ChannelKind.LiveRoom; }
+  isForum() { return this.kind === ChannelKind.Forum; }
   /**
    * The channel's address in the app, or null for one that has none (a thread, or a hub or
    * channel the cache knows only by id). Posted in a message, a reader who can see the channel
@@ -1084,6 +1097,267 @@ export class Channel {
     await this.client.core.rest.put(`/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}/lock`, { locked });
     return this;
   }
+
+  /**
+   * Replace a forum's WHOLE tag catalogue (up to 20). Keep a tag by sending its `id` — posts wearing
+   * it stay tagged; one left out is deleted. New tags get their ids from the server, so the channel
+   * is re-read afterwards and `forumTags` carries them.
+   *
+   * @param {{ id?: string, name: string, color?: string | null, emoji?: string | null, modOnly?: boolean }[]} tags
+   */
+  async setForumTags(tags) {
+    await this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}`, { forum_tags: forumTagsBody(tags) });
+    await this.hub.channels.fetch();
+    return this;
+  }
+
+  /**
+   * Change a forum's settings. A patch: keys left out keep their value.
+   * @param {{ requireTag?: boolean, defaultSort?: string, defaultLayout?: string }} settings
+   */
+  async setForumSettings(settings) {
+    const body = forumSettingsBody(settings);
+    await this.client.core.rest.patch(`/hubs/${enc(this.hub.id)}/app/channels/${enc(this.id)}`, { forum_settings: body });
+    this.forumSettings = { ...(this.forumSettings ?? toForumSettings({})), ...toForumSettings(body, true) };
+    return this;
+  }
+}
+
+/* ── Forums ─────────────────────────────────────────────────────────────────────────────────── */
+
+/** @param {any} tags the API's `forum_tags` */
+function toForumTags(tags) {
+  if (!Array.isArray(tags)) return null;
+  return tags.map((t) => ({ id: t.id, name: t.name, color: t.color ?? null, emoji: t.emoji ?? null, modOnly: Boolean(t.mod_only) }));
+}
+
+/**
+ * The API's `forum_settings` → camelCase. `partial` keeps only the keys present, for merging a patch.
+ * @param {any} s @param {boolean} [partial]
+ */
+function toForumSettings(s, partial = false) {
+  if (!s || typeof s !== "object") return null;
+  /** @type {Record<string, any>} */
+  const out = {
+    requireTag: "require_tag" in s ? Boolean(s.require_tag) : partial ? undefined : false,
+    defaultSort: s.default_sort ?? (partial ? undefined : "activity"),
+    defaultLayout: s.default_layout ?? (partial ? undefined : "list"),
+  };
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return /** @type {any} */ (out);
+}
+
+/** @param {any[]} tags camelCase or the API's own shape */
+function forumTagsBody(tags) {
+  return tags.map((t) => {
+    /** @type {Record<string, unknown>} */
+    const out = { name: t.name };
+    if (t.id) out.id = t.id;
+    if (t.color !== undefined) out.color = t.color;
+    if (t.emoji !== undefined) out.emoji = t.emoji;
+    const modOnly = t.modOnly ?? t.mod_only;
+    if (modOnly !== undefined) out.mod_only = Boolean(modOnly);
+    return out;
+  });
+}
+
+/** @param {any} s camelCase or the API's own shape */
+function forumSettingsBody(s) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  const requireTag = s?.requireTag ?? s?.require_tag;
+  if (requireTag !== undefined) out.require_tag = Boolean(requireTag);
+  const sort = s?.defaultSort ?? s?.default_sort;
+  if (sort !== undefined) out.default_sort = sort;
+  const layout = s?.defaultLayout ?? s?.default_layout;
+  if (layout !== undefined) out.default_layout = layout;
+  return out;
+}
+
+/** Tags as ids — from ids, or tag objects from `forumTags`. @param {any} tags @returns {string[]} */
+const tagIds = (tags) => (Array.isArray(tags) ? tags : [tags]).map((t) => (typeof t === "string" ? t : t.id));
+
+/**
+ * One post in a forum: a thread with a title, tags from the forum's catalogue, and an opening
+ * message. Replies are ordinary messages in it — `post.reply()`, or `post.channel` for the rest of
+ * what a channel does. Votes are people's; an application can read `voteCount` but not vote.
+ */
+export class ForumPost {
+  /** @param {Client} client @param {Channel} forum @param {any} data the API's Post */
+  constructor(client, forum, data) {
+    this.client = client;
+    this.forum = forum;
+    this.hub = forum.hub;
+    this.hubId = forum.hub.id;
+    this.id = data.id;
+    /** The accepted answer, when read with `fetchOne()`; otherwise null — see `acceptedMessageId`. @type {Message | null} */
+    this.acceptedMessage = null;
+    this._patch(data);
+  }
+
+  /** @param {any} data */
+  _patch(data) {
+    const client = this.client;
+    this.forumId = data.forum_id ?? this.forum.id;
+    this.title = data.title ?? "";
+    /** The ids of the forum tags the post wears. */
+    this.tags = /** @type {string[]} */ (data.applied_tags ?? []);
+    const o = data.owner;
+    /** The member who posted; null for an application's post. @type {User | null} */
+    this.owner = o ? client.users.add({ id: o.id, username: o.username, name: o.display_name ?? o.displayName ?? null, avatar_url: o.avatar_url ?? null }) : null;
+    const a = data.author;
+    /** Who posted it — the member, or the application. @type {User | null} */
+    this.author = a?.type === "application"
+      ? client.users.add({ id: a.application_id, username: a.name, name: a.name, bot: true })
+      : this.owner ?? (a ? client.users.add({ id: a.id, username: a.username, name: a.displayName ?? null, avatar_url: a.avatar_url ?? null }) : null);
+    this.createdAt = data.created_at ? new Date(data.created_at) : null;
+    this.createdTimestamp = this.createdAt?.getTime() ?? null;
+    this.lastActivityAt = data.last_activity_at ? new Date(data.last_activity_at) : null;
+    this.replyCount = Number(data.reply_count ?? 0);
+    this.voteCount = Number(data.vote_count ?? 0);
+    this.acceptedMessageId = data.accepted_message_id ?? null;
+    this.solved = Boolean(data.is_solved);
+    this.pinned = Boolean(data.is_pinned);
+    this.pinnedAt = data.pinned_at ? new Date(data.pinned_at) : null;
+    this.archived = Boolean(data.is_archived);
+    this.locked = Boolean(data.is_locked);
+    const st = data.starter;
+    /**
+     * The opening message, abridged: `excerpt` is its first 400 characters of raw markdown.
+     * @type {{ id: string, excerpt: string, mediaUrl: string | null, mediaType: string | null, deleted: boolean } | null}
+     */
+    this.starter = st ? { id: st.id, excerpt: st.excerpt ?? "", mediaUrl: st.media_url ?? null, mediaType: st.media_type ?? null, deleted: Boolean(st.is_deleted) } : null;
+    const cached = this.hub.channels.cache.get(this.id);
+    if (cached) cached.name = this.title;
+  }
+
+  /** The post as a channel — its replies are its messages. */
+  get channel() {
+    return this.hub.channels.cache.get(this.id) ?? this.hub.channels.add({ id: this.id, name: this.title, kind: ChannelKind.Thread });
+  }
+
+  /** The post's address in the app, or null when its forum has none. */
+  get url() { return this.forum.url ? `${this.forum.url}/${encodeURIComponent(this.id)}` : null; }
+
+  get #path() { return `/hubs/${enc(this.hubId)}/app/posts/${enc(this.id)}`; }
+
+  /** Re-read the post, with its accepted answer as `acceptedMessage`. */
+  fetch() { return this.forum.posts.fetchOne(this.id); }
+
+  /**
+   * Reply in the post — Create Message with the post as the channel, so it takes everything
+   * `channel.send()` does. Replying to an archived (not locked) post revives it.
+   * @param {any} options
+   */
+  reply(options) { return this.channel.send(options); }
+
+  /**
+   * Needs `Permissions.ManageThreads`. `tags` replaces the whole set; `acceptedMessage` is a reply
+   * in this post (not the opening message), or null to clear it.
+   *
+   * @param {{ title?: string, tags?: any[], pinned?: boolean, acceptedMessage?: string | Message | null, archived?: boolean, locked?: boolean }} data
+   */
+  async edit(data) {
+    /** @type {Record<string, unknown>} */
+    const body = {};
+    if (data.title !== undefined) body.title = data.title;
+    if (data.tags !== undefined) body.applied_tags = tagIds(data.tags);
+    if (data.pinned !== undefined) body.pinned = Boolean(data.pinned);
+    if (data.acceptedMessage !== undefined) {
+      const m = data.acceptedMessage;
+      body.accepted_message_id = m === null ? null : typeof m === "string" ? m : m.id;
+    }
+    if (data.archived !== undefined) body.archived = Boolean(data.archived);
+    if (data.locked !== undefined) body.locked = Boolean(data.locked);
+    const { post } = await this.client.core.rest.patch(this.#path, body);
+    if (post) this._patch(post);
+    return this;
+  }
+
+  /** Mark a reply as the answer, or clear it with null. @param {string | Message | null} message */
+  setAnswer(message) { return this.edit({ acceptedMessage: message }); }
+  pin() { return this.edit({ pinned: true }); }
+  unpin() { return this.edit({ pinned: false }); }
+  lock() { return this.edit({ locked: true }); }
+  unlock() { return this.edit({ locked: false }); }
+  archive() { return this.edit({ archived: true }); }
+  unarchive() { return this.edit({ archived: false }); }
+
+  toString() { return this.title; }
+}
+
+/** `channel.posts` — a forum's posts. */
+class ForumPostManager {
+  /** @param {Channel} forum */
+  constructor(forum) {
+    this.forum = forum;
+    /** @type {Collection<string, ForumPost>} */
+    this.cache = new Collection();
+  }
+
+  get #base() { return `/hubs/${enc(this.forum.hub.id)}/app`; }
+
+  /** A Post from the API → the cached ForumPost, refreshed. @param {any} data */
+  add(data) {
+    const existing = this.cache.get(data.id);
+    if (existing) {
+      existing._patch(data);
+      return existing;
+    }
+    const post = new ForumPost(this.forum.client, this.forum, data);
+    this.cache.set(post.id, post);
+    if (this.cache.size > 200) this.cache.delete(/** @type {string} */ (this.cache.firstKey()));
+    return post;
+  }
+
+  /**
+   * Start a post. Needs `Permissions.CreateThreads`. `title` and `tags` (up to 5 tag ids or tags
+   * from `forumTags`) are the post's; everything else is its opening message, as `channel.send()`
+   * takes it — content, embeds, components, a poll, files.
+   *
+   * @param {{ title: string, tags?: any[], [key: string]: any }} options
+   */
+  async create(options) {
+    const { title, tags, ...message } = options;
+    const forum = this.forum;
+    const body = { ...toXiveMessage(forum.client, forum.hub, message), title };
+    if (tags !== undefined) body.applied_tags = tagIds(tags);
+    const files = await resolveFiles(message);
+    const res = await forum.client.core.rest.post(`${this.#base}/channels/${enc(forum.id)}/posts`, body, files);
+    const post = this.add(res.post);
+    if (res.message) post.channel.messages.add(res.message);
+    return post;
+  }
+
+  /**
+   * A page of posts (30 per page), pinned first. `sort` defaults to the forum's own default;
+   * `query` searches titles and opening messages.
+   *
+   * @param {{ sort?: string, tag?: any, status?: string, query?: string, page?: number }} [options]
+   * @returns {Promise<{ posts: ForumPost[], hasMore: boolean, page: number, sort: string }>}
+   */
+  async fetch(options = {}) {
+    const tag = options.tag === undefined || options.tag === null ? undefined : tagIds(options.tag)[0];
+    const res = await this.forum.client.core.rest.get(`${this.#base}/channels/${enc(this.forum.id)}/posts`, {
+      sort: options.sort, tag, status: options.status, q: options.query, page: options.page,
+    });
+    if (res.forum) this.forum.hub.channels.add(res.forum);
+    return {
+      posts: (res.posts ?? []).map((/** @type {any} */ p) => this.add(p)),
+      hasMore: Boolean(res.has_more),
+      page: res.page ?? options.page ?? 0,
+      sort: res.sort ?? options.sort ?? null,
+    };
+  }
+
+  /** One post, with its accepted answer as `acceptedMessage`. @param {string} id */
+  async fetchOne(id) {
+    const { post, forum } = await this.forum.client.core.rest.get(`${this.#base}/posts/${enc(id)}`);
+    if (forum) this.forum.hub.channels.add(forum);
+    const out = this.add(post);
+    out.acceptedMessage = post.accepted_message ? out.channel.messages.add(post.accepted_message) : null;
+    return out;
+  }
 }
 
 /* ── Hubs ───────────────────────────────────────────────────────────────────────────────────── */
@@ -1105,6 +1379,8 @@ class ChannelManager {
       if (data.slug && !existing.slug) existing.slug = data.slug;
       if (data.name && existing.name === existing.id) existing.name = data.name;
       if (data.kind) existing.kind = data.kind;
+      if (data.forum_tags) existing.forumTags = toForumTags(data.forum_tags);
+      if (data.forum_settings) existing.forumSettings = toForumSettings(data.forum_settings);
       return existing;
     }
     const channel = new Channel(this.hub.client, this.hub, data);
@@ -1121,12 +1397,21 @@ class ChannelManager {
     return this.cache;
   }
 
-  /** @param {{ name: string, kind?: string, topic?: string, parent?: string }} options */
+  /**
+   * `kind: ChannelKind.Forum` makes a forum; `forumTags` and `forumSettings` set it up in the same
+   * call (as `setForumTags` / `setForumSettings` take them).
+   * @param {{ name: string, kind?: string, topic?: string, parent?: string, forumTags?: any[], forumSettings?: any }} options
+   */
   async create(options) {
     const { channel } = await this.hub.client.core.rest.post(`/hubs/${enc(this.hub.id)}/app/channels`, {
       name: options.name, kind: options.kind ?? ChannelKind.Text, topic: options.topic, category_id: options.parent,
+      forum_tags: options.forumTags ? forumTagsBody(options.forumTags) : undefined,
+      forum_settings: options.forumSettings ? forumSettingsBody(options.forumSettings) : undefined,
     });
-    return this.add(channel);
+    const created = this.add(channel);
+    // The tags' ids are the server's; re-read when it did not send them back.
+    if (options.forumTags?.length && !channel.forum_tags) await this.fetch();
+    return created;
   }
 }
 

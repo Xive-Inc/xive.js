@@ -37,6 +37,8 @@ import type {
   Channel,
   ClientPresence,
   CommandInteraction,
+  ForumPost,
+  ForumPostChange,
   HubBan,
   Interaction,
   Member,
@@ -350,7 +352,7 @@ async function moderation(c: Client<true>) {
   await member.setNickname(null);
   expectType<boolean>(hub.me.permissions.has([Permissions.ManageRoles, "KickMembers"]));
   // @ts-expect-error — not a permission
-  hub.me.permissions.has("Administrator");
+  hub.me.permissions.has("Superuser");
   const role = await hub.roles.fetch("role-id");
   if (role) expectType<number>(role.position);
   const fetched = await c.hubs.fetch("hub-id");
@@ -387,3 +389,43 @@ async function hubCommandsAndRolePermissions(hub: Hub, role: Role, client: Clien
   await hub.roles.create({ name: "Helper", permissions: "KickMembers" });
   void set; void same;
 }
+
+// Forums: posts, tags, settings and the two post events.
+async function forums(hub: Hub, message: Message) {
+  const forum = await hub.channels.create({
+    name: "help",
+    kind: ChannelKind.Forum,
+    forumTags: [{ name: "Bug", color: "#ff0000", emoji: "🐛" }, { name: "Staff", modOnly: true }],
+    forumSettings: { requireTag: true, defaultSort: "newest" },
+  });
+  expectType<boolean>(forum.isForum());
+  const bug = forum.forumTags?.find((t) => t.name === "Bug");
+  const post = await forum.posts.create({ title: "Crash on login", tags: bug ? [bug] : [], content: "Steps…", files: ["./log.txt"] });
+  expectType<ForumPost>(post);
+  expectType<string[]>(post.tags);
+  expectType<Channel>(post.channel);
+  expectType<string | null>(post.url);
+  expectType<Message>(await post.reply("Looking into it"));
+  await post.edit({ title: "Crash on login (fixed)", tags: ["tag-id"], pinned: true, locked: false });
+  await post.setAnswer(message);
+  await post.setAnswer(null);
+  await post.archive();
+  const page = await forum.posts.fetch({ sort: "top", status: "unanswered", query: "crash", page: 0 });
+  expectType<ForumPost[]>(page.posts);
+  expectType<boolean>(page.hasMore);
+  const one = await forum.posts.fetchOne(post.id);
+  expectType<Message | null>(one.acceptedMessage);
+  await forum.setForumTags([...(forum.forumTags ?? []), { name: "Question" }]);
+  await forum.setForumSettings({ defaultLayout: "gallery" });
+  // @ts-expect-error — a post needs a title
+  await forum.posts.create({ content: "no title" });
+  // @ts-expect-error — not a sort order
+  await forum.posts.fetch({ sort: "oldest" });
+}
+client.on(Events.ForumPostCreate, (post) => assertType<Equals<typeof post, ForumPost>>());
+client.on(Events.ForumPostUpdate, (post, changes) => {
+  expectType<ForumPost>(post);
+  assertType<Equals<typeof changes, ForumPostChange[]>>();
+  if (changes.includes("accepted_message_id")) expectType<boolean>(post.solved);
+});
+void forums;

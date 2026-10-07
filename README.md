@@ -266,6 +266,43 @@ await message.poll.end(); // only on the bot's own polls
 - **When it ends**, early or by expiring, you get `messageUpdate` with `poll.resultsFinalized` set.
 - **Permission:** sending one needs `Permissions.SendPolls` in the channel.
 
+## Forums
+
+A forum (`ChannelKind.Forum`, `channel.isForum()`) holds posts, not messages. Each post is a
+thread with a title, tags from the forum's catalogue, and an opening message:
+
+```js
+const forum = hub.channels.cache.find((c) => c.isForum() && c.name === "help");
+const bug = forum.forumTags.find((t) => t.name === "Bug");
+
+const post = await forum.posts.create({ title: "Crash on login", tags: [bug], content: "Steps…", files: ["./log.txt"] });
+const answer = await post.reply("Fixed in 2.1");
+await post.setAnswer(answer);
+await post.lock();
+
+const { posts, hasMore } = await forum.posts.fetch({ sort: "newest", tag: bug, status: "unanswered" });
+
+client.on(Events.ForumPostCreate, (post) => console.log(`New post: ${post.title}`));
+client.on(Events.ForumPostUpdate, (post, changes) => {
+  if (changes.includes("accepted_message_id") && post.solved) console.log(`${post.title} is solved`);
+});
+```
+
+- **Creating a post** takes everything `send()` does for the opening message, plus `title` (up to
+  100) and `tags` (up to 5). It needs `Permissions.CreateThreads`; replying needs
+  `SendMessagesInThreads`. `SendMessages` does nothing on a forum.
+- **Managing posts** (`edit({ title, tags, pinned, acceptedMessage, archived, locked })`, `pin`,
+  `lock`, `archive`, `setAnswer` and their opposites) needs `Permissions.ManageThreads`, as do
+  mod-only tags. Replying to an archived post revives it, unless it is also locked.
+- **Reading one:** a post has `title`, `tags` (tag ids), `owner` (null for an app's post),
+  `author`, `replyCount`, `voteCount`, `solved`, `pinned`, `archived`, `locked` and `starter` (the
+  opening message's first 400 characters). `post.channel` is the post as a channel. Applications
+  can't vote.
+- **Setting up a forum:** `hub.channels.create({ name, kind: ChannelKind.Forum, forumTags, forumSettings })`,
+  then `forum.setForumTags(tags)` (the whole catalogue; send a tag's `id` to keep it) and
+  `forum.setForumSettings({ requireTag, defaultSort, defaultLayout })`. Both need
+  `Permissions.ManageChannels`.
+
 ## HTTP delivery instead of the gateway
 
 If you'd rather receive signed POSTs, for example on a serverless host:

@@ -21,6 +21,8 @@ export const Events = Object.freeze({
   HubCreate: "hubCreate",
   InteractionCreate: "interactionCreate",
   PresenceUpdate: "presenceUpdate",
+  ForumPostCreate: "forumPostCreate",
+  ForumPostUpdate: "forumPostUpdate",
   Disconnect: "disconnect",
   Reconnect: "reconnect",
   Error: "error",
@@ -87,6 +89,8 @@ export const ChannelKind = Object.freeze({
   Thread: "thread",
   LiveRoom: "live_room",
   RolePicker: "role_picker",
+  /** Holds posts, not messages — see `channel.posts`. */
+  Forum: "forum",
 });
 
 /** Component types — Discord's numbers, which is what Xive stores. */

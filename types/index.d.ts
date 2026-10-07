@@ -23,6 +23,8 @@ export declare const Events: {
   readonly HubCreate: "hubCreate";
   readonly InteractionCreate: "interactionCreate";
   readonly PresenceUpdate: "presenceUpdate";
+  readonly ForumPostCreate: "forumPostCreate";
+  readonly ForumPostUpdate: "forumPostUpdate";
   readonly Disconnect: "disconnect";
   readonly Reconnect: "reconnect";
   readonly Error: "error";
@@ -91,6 +93,8 @@ export declare const ChannelKind: {
   readonly Thread: "thread";
   readonly LiveRoom: "live_room";
   readonly RolePicker: "role_picker";
+  /** Holds posts, not messages — see `channel.posts`. */
+  readonly Forum: "forum";
 };
 export type ChannelKind = (typeof ChannelKind)[keyof typeof ChannelKind];
 
@@ -973,12 +977,20 @@ export declare class Channel {
   /** One of ChannelKind (other kinds, such as `announcement`, may appear). */
   kind: ChannelKind | (string & {});
   messages: MessageManager;
+  /** A forum's tag catalogue; null on other kinds. */
+  forumTags: ForumTag[] | null;
+  /** A forum's settings; null on other kinds. */
+  forumSettings: ForumSettings | null;
+  /** A forum's posts. */
+  posts: ForumPostManager;
   threads: {
     create(options: { name: string; startMessage?: string | Message }): Promise<Channel>;
   };
+  /** False for a role picker and a forum (nobody posts into a forum itself). */
   isTextBased(): boolean;
   isThread(): boolean;
   isVoiceBased(): boolean;
+  isForum(): boolean;
   /** The channel's address in the app, or null for one that has none. */
   readonly url: string | null;
   /** `<channel:id>` — interpolating a channel links it. */
@@ -991,6 +1003,160 @@ export declare class Channel {
   /** Shows "<app> is typing…" for ten seconds, or until your next message in the channel. */
   sendTyping(): Promise<void>;
   setLocked(locked?: boolean): Promise<this>;
+  /**
+   * Replace a forum's whole tag catalogue (up to 20). Send a tag's `id` to keep it; one left out is
+   * deleted. Re-reads the hub's channels afterwards, so `forumTags` carries the new ids.
+   */
+  setForumTags(tags: readonly ForumTagData[]): Promise<this>;
+  /** Change a forum's settings. Keys left out keep their value. */
+  setForumSettings(settings: Partial<ForumSettings>): Promise<this>;
+}
+
+/* ── Forums ────────────────────────────────────────────────────────────────────────────────── */
+
+export type ForumSortOrder = "activity" | "newest" | "top";
+export type ForumLayout = "list" | "gallery";
+export type ForumPostStatus = "all" | "open" | "solved" | "unanswered";
+/** What `forumPostUpdate` reports as changed. */
+export type ForumPostChange = "title" | "applied_tags" | "pinned" | "accepted_message_id" | "archived" | "locked";
+
+export interface ForumTag {
+  id: string;
+  /** Up to 24, unique in the forum ignoring case. */
+  name: string;
+  /** `#rrggbb`. */
+  color: string | null;
+  /** One emoji. */
+  emoji: string | null;
+  /** Only members with Manage Posts (and applications with `ManageThreads`) may apply it. */
+  modOnly: boolean;
+}
+
+/** A tag as `setForumTags` takes it: an `id` keeps an existing tag; without one it is new. */
+export interface ForumTagData {
+  id?: string;
+  name: string;
+  color?: string | null;
+  emoji?: string | null;
+  modOnly?: boolean;
+}
+
+export interface ForumSettings {
+  /** Every post must wear at least one tag. */
+  requireTag: boolean;
+  defaultSort: ForumSortOrder;
+  defaultLayout: ForumLayout;
+}
+
+/** A forum's tag, or its id. */
+export type ForumTagResolvable = string | { id: string };
+
+export interface ForumPostStarter {
+  id: string;
+  /** The first 400 characters of the opening message, as raw markdown. */
+  excerpt: string;
+  mediaUrl: string | null;
+  mediaType: string | null;
+  deleted: boolean;
+}
+
+export interface ForumPostCreateOptions extends Omit<MessageCreateOptions, "reply" | "messageReference"> {
+  /** Up to 100. */
+  title: string;
+  /** Up to 5. Required (at least one) when the forum's `requireTag` is on. */
+  tags?: readonly ForumTagResolvable[];
+}
+
+export interface ForumPostEditOptions {
+  title?: string;
+  /** Replaces the whole set. */
+  tags?: readonly ForumTagResolvable[];
+  pinned?: boolean;
+  /** A reply in the post (not the opening message), or null to clear. */
+  acceptedMessage?: string | Message | null;
+  archived?: boolean;
+  locked?: boolean;
+}
+
+export interface FetchForumPostsOptions {
+  /** Defaults to the forum's `defaultSort`. */
+  sort?: ForumSortOrder;
+  tag?: ForumTagResolvable;
+  status?: ForumPostStatus;
+  /** Searches titles and opening messages. Up to 100. */
+  query?: string;
+  /** 0-based; 30 posts a page. */
+  page?: number;
+}
+
+export interface FetchedForumPosts {
+  /** Pinned posts first. */
+  posts: ForumPost[];
+  hasMore: boolean;
+  page: number;
+  sort: ForumSortOrder | null;
+}
+
+/** `channel.posts`. */
+export interface ForumPostManager {
+  forum: Channel;
+  cache: Collection<string, ForumPost>;
+  add(data: any): ForumPost;
+  /** Needs `CreateThreads`. Everything but `title` and `tags` is the opening message. */
+  create(options: ForumPostCreateOptions): Promise<ForumPost>;
+  fetch(options?: FetchForumPostsOptions): Promise<FetchedForumPosts>;
+  /** One post, with `acceptedMessage` loaded. */
+  fetchOne(id: string): Promise<ForumPost>;
+}
+
+/** One post in a forum — a thread with a title, tags and an opening message. */
+export declare class ForumPost {
+  constructor(client: Client, forum: Channel, data: any);
+  client: Client;
+  forum: Channel;
+  hub: Hub;
+  hubId: string;
+  id: string;
+  forumId: string;
+  title: string;
+  /** The ids of the forum tags the post wears. */
+  tags: string[];
+  /** The member who posted; null for an application's post. */
+  owner: User | null;
+  /** The member or application that posted. */
+  author: User | null;
+  createdAt: Date | null;
+  createdTimestamp: number | null;
+  lastActivityAt: Date | null;
+  replyCount: number;
+  /** People's votes. Applications cannot vote. */
+  voteCount: number;
+  acceptedMessageId: string | null;
+  /** Loaded by `fetch()` / `posts.fetchOne()`; otherwise null. */
+  acceptedMessage: Message | null;
+  solved: boolean;
+  pinned: boolean;
+  pinnedAt: Date | null;
+  archived: boolean;
+  locked: boolean;
+  starter: ForumPostStarter | null;
+  /** The post as a channel — its replies are its messages. */
+  readonly channel: Channel;
+  /** The post's address in the app, or null when its forum has none. */
+  readonly url: string | null;
+  fetch(): Promise<ForumPost>;
+  /** A message in the post. Revives an archived (not locked) post. */
+  reply(options: string | MessageCreateOptions): Promise<Message>;
+  /** Needs `ManageThreads`. */
+  edit(data: ForumPostEditOptions): Promise<this>;
+  setAnswer(message: string | Message | null): Promise<this>;
+  pin(): Promise<this>;
+  unpin(): Promise<this>;
+  lock(): Promise<this>;
+  unlock(): Promise<this>;
+  archive(): Promise<this>;
+  unarchive(): Promise<this>;
+  toString(): string;
 }
 
 /* ── Hubs ──────────────────────────────────────────────────────────────────────────────────── */
@@ -1002,7 +1168,16 @@ export interface ChannelManager {
   add(data: any): Channel;
   fetch(): Promise<Collection<string, Channel>>;
   fetch(id: string): Promise<Channel | null>;
-  create(options: { name: string; kind?: ChannelKind; topic?: string; parent?: string }): Promise<Channel>;
+  create(options: {
+    name: string;
+    kind?: ChannelKind;
+    topic?: string;
+    parent?: string;
+    /** Forums only. */
+    forumTags?: readonly ForumTagData[];
+    /** Forums only. */
+    forumSettings?: Partial<ForumSettings>;
+  }): Promise<Channel>;
 }
 
 /** `hub.members`. */
@@ -1385,6 +1560,10 @@ export interface ClientEvents {
   hubCreate: [hub: Hub];
   interactionCreate: [interaction: Interaction];
   presenceUpdate: [oldPresence: Presence | null, newPresence: Presence];
+  /** A post started in a forum the application can view. Its opening message also arrives as `messageCreate`. */
+  forumPostCreate: [post: ForumPost];
+  /** A post's title, tags, pin, answer, archive or lock changed. */
+  forumPostUpdate: [post: ForumPost, changes: ForumPostChange[]];
   disconnect: [context: { code: number; reason: string; [key: string]: any }];
   reconnect: [];
   error: [error: Error];

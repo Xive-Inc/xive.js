@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Connection } from "./connection.js";
 import { Collection } from "./collection.js";
-import { Events } from "./constants.js";
+import { ChannelKind, Events } from "./constants.js";
 import { toCommandJSON } from "./builders.js";
 import { ClientUser, Hub, Member, Message, MessageReaction, Poll, PollAnswer, Presence, User } from "./structures.js";
 import { createInteraction } from "./interactions.js";
@@ -260,6 +260,19 @@ export class Client extends EventEmitter {
           if (!hub) return;
           const user = this.users.add({ id: d.member_id, username: d.member_name, name: d.member_name });
           this.emit(Events.BanRemove, { hub, user, reason: null });
+          return;
+        }
+        case "forum.post_created":
+        case "forum.post_updated": {
+          // To apps that can view the forum; no intent. The opening message of a new post also
+          // arrives as its own message.created.
+          const hub = await this.#hub(d.hub_id ?? envelope.subscription?.hub_id);
+          if (!hub || !d.post) return;
+          const forum = hub.channels.cache.get(d.channel_id)
+            ?? hub.channels.add({ id: d.channel_id, name: d.channel_id, kind: ChannelKind.Forum });
+          const post = forum.posts.add(d.post);
+          if (event.type === "forum.post_created") this.emit(Events.ForumPostCreate, post);
+          else this.emit(Events.ForumPostUpdate, post, Array.isArray(d.changes) ? d.changes : []);
           return;
         }
         case "interaction.created": {
